@@ -16,6 +16,7 @@ import { parseJsonlTranscript, readSessionJsonl, type TranscriptMessage } from '
 import { syncTaskOutbound } from './github-sync-engine'
 import { classifyModelProvider, getDispatchModelId, getModelByAlias } from './models'
 import { getMiniMaxApiKey, resolveMiniMaxEndpoint } from './minimax'
+import { getPlatoonCommander } from './platoon-commanders'
 import type Database from 'better-sqlite3'
 
 const AGENT_DISPATCH_ACCEPT_TIMEOUT_MS = 60_000
@@ -952,6 +953,19 @@ function getCodexCliBinaryPath(): string | null {
       codexCliBinaryPath = 'codex'
       return 'codex'
     }
+
+    if (process.platform === 'win32') {
+      const os = require('node:os')
+      const bundled = path.join(os.homedir(), '.codex', 'plugins', '.plugin-appserver', 'codex.exe')
+      if (existsSync(bundled)) {
+        const bundledResult = spawnSync(bundled, ['--version'], { stdio: 'ignore', timeout: 5000 })
+        if (bundledResult.status === 0) {
+          codexCliBinaryPath = bundled
+          return bundled
+        }
+      }
+    }
+
     codexCliBinaryPath = false
     return null
   } catch {
@@ -1357,6 +1371,66 @@ async function callCodexViaCli(
 
     proc.stdin.write(fullPrompt)
     proc.stdin.end()
+  })
+}
+
+
+async function callHermesViaProfile(
+  task: DispatchableTask,
+  prompt: string,
+): Promise<AgentResponseParsed> {
+  const commander = getPlatoonCommander('hermes')
+  if (!commander) throw new Error('Hermes platoon commander adapter is unavailable')
+  if (commander.blocked || !commander.commanderAvailable) {
+    throw new Error('Hermes platoon dispatch is blocked by the orchestrator safety stop')
+  }
+
+  const profile = commander.agents.find(agent => agent.name.toLowerCase() === task.agent_name.toLowerCase())
+  if (!profile) throw new Error(`Hermes profile not found for agent ${task.agent_name}`)
+
+  if (prompt.length > 24_000) {
+    throw new Error('Hermes one-shot prompt exceeds the safe Windows command-line budget')
+  }
+
+  const sandbox = resolveCliSandboxOptions(task)
+  const args = ['-p', profile.name, '-z', prompt]
+  if (sandbox.cwd) args.push('--in', sandbox.cwd)
+
+  logger.info(
+    { taskId: task.id, agent: task.agent_name, profile: profile.name, ...(sandbox.cwd ? { cwd: sandbox.cwd } : {}) },
+    'Dispatching task via Hermes profile',
+  )
+
+  return await new Promise<AgentResponseParsed>((resolve, reject) => {
+    const proc = spawn(process.env.HERMES_BIN || 'hermes', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env },
+      ...(sandbox.cwd ? { cwd: sandbox.cwd } : {}),
+    })
+    let stdout = ''
+    let stderr = ''
+    const maxBytes = 1_000_000
+    const timeoutMs = 300_000
+    const timer = setTimeout(() => {
+      proc.kill('SIGTERM')
+      reject(new Error(`Hermes CLI timed out after ${timeoutMs / 1000}s`))
+    }, timeoutMs)
+
+    proc.stdout.on('data', (chunk) => {
+      if (stdout.length < maxBytes) stdout += chunk.toString().slice(0, maxBytes - stdout.length)
+    })
+    proc.stderr.on('data', (chunk) => {
+      if (stderr.length < maxBytes) stderr += chunk.toString().slice(0, maxBytes - stderr.length)
+    })
+    proc.on('error', (err) => { clearTimeout(timer); reject(err) })
+    proc.on('close', (code) => {
+      clearTimeout(timer)
+      const text = stdout.trim()
+      if (code !== 0 && !text) {
+        return reject(new Error(`Hermes CLI exited ${code}: ${stderr.slice(0, 500)}`))
+      }
+      resolve({ text: text || null, sessionId: null })
+    })
   })
 }
 
@@ -1823,6 +1897,11 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         // and callDirectly — a claude-runtime agent never falls back to a
         // less restrictive provider; failures surface as dispatch failures.
         agentResponse = await dispatchViaClaudeSession(task, prompt)
+      } else if (String(task.agent_runtime_type || '').toLowerCase() === 'hermes') {
+        // AgentOS platoon dispatch: route only through a discovered Hermes profile.
+        // The platoon-level ESTOP is checked inside callHermesViaProfile and blocks
+        // all dispatch while the orchestrator safety stop is active.
+        agentResponse = await callHermesViaProfile(task, prompt)
       } else if (useDirectApi && !targetSession) {
         // Direct API dispatch — provider chosen by `dispatchModel`. No gateway needed.
         agentResponse = await callDirectly(task, prompt)

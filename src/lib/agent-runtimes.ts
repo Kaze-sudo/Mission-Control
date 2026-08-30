@@ -311,14 +311,14 @@ export const RUNTIME_CAPABILITIES: Record<RuntimeId, RuntimeCapabilities> = {
     receipts: { ...NO_RECEIPTS, telemetry: true }, // gateway session token stats
   },
   hermes: {
-    dispatch: false, // no dispatcher branch; runtime_type: 'hermes' provisions profiles only
-    session_resume: false,
+    dispatch: true, // AgentOS guarded profile dispatch via `hermes -p <profile> -z ...`
+    session_resume: false, // first slice is one-shot profile dispatch; persistent resume comes later
     pty: false,
-    workspace_cwd: false,
-    tool_policy: false,
+    workspace_cwd: true, // Hermes `--in DIR`
+    tool_policy: false, // profile toolsets are persistent; no AgentOS per-task allowlist yet
     budget_cap: false,
-    structured_output: false,
-    skills_inventory: false, // pending upstream hermes-agent#71274 (`skills list --json`)
+    structured_output: false, // one-shot returns final text, not a machine-readable envelope
+    skills_inventory: false, // profile skills exist but canonical machine-readable inventory is not yet wired
     receipts: { ...NO_RECEIPTS },
   },
   claude: {
@@ -467,11 +467,16 @@ function detectHermes(): RuntimeStatus {
   if (installed) {
     try {
       const homeDir = require('node:os').homedir()
-      const configPath = join(homeDir, '.hermes', 'config.yaml')
-      if (existsSync(configPath)) {
+      const localAppData = process.env.LOCALAPPDATA || join(homeDir, 'AppData', 'Local')
+      const configCandidates = [
+        join(homeDir, '.hermes', 'config.yaml'),
+        join(localAppData, 'hermes', 'config.yaml'),
+        join(localAppData, 'hermes', 'profiles', 'orchestrator', 'config.yaml'),
+      ]
+      for (const configPath of configCandidates) {
+        if (!existsSync(configPath)) continue
         const raw = require('node:fs').readFileSync(configPath, 'utf8')
-        // Has a model configured = considered authenticated/configured
-        authenticated = /^model:\s*\S+/m.test(raw)
+        if (/^model:\s*\S+/m.test(raw)) { authenticated = true; break }
       }
     } catch {
       // ignore
@@ -489,13 +494,22 @@ function detectBinary(bins: string[], versionFlag = '--version'): { installed: b
   // Expand bare binary names with common install locations that may not be on PATH
   const candidates: string[] = []
   for (const bin of bins) {
-    if (!bin.includes('/')) {
+    if (!bin.includes('/') && !bin.includes('\\')) {
       candidates.push(
         path.join(homedir, '.local', 'bin', bin),
         path.join('/usr', 'local', 'bin', bin),
         path.join(homedir, 'Library', 'pnpm', bin),  // macOS pnpm global
         path.join(homedir, '.npm-global', 'bin', bin),
       )
+      if (process.platform === 'win32') {
+        candidates.push(
+          path.join(process.env.APPDATA || '', 'npm', `${bin}.cmd`),
+          path.join(process.env.APPDATA || '', 'npm', `${bin}.exe`),
+        )
+        if (bin === 'codex' || bin === 'codex-cli') {
+          candidates.push(path.join(homedir, '.codex', 'plugins', '.plugin-appserver', 'codex.exe'))
+        }
+      }
     }
     candidates.push(bin)
   }

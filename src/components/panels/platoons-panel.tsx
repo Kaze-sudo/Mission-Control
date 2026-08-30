@@ -36,9 +36,25 @@ interface RosterResponse {
   agents?: RosterAgent[]
 }
 
+interface CommanderSnapshot {
+  platoonId: string
+  commanderName: string
+  commanderAvailable: boolean
+  blocked: boolean
+  blockReason: string | null
+  inventoryMode: 'native-profiles' | 'config-profiles' | 'runtime-only'
+  agents: Array<{ id: string; name: string; isCommander: boolean }>
+  notes: string[]
+}
+
+interface CommanderResponse {
+  commanders?: CommanderSnapshot[]
+}
+
 export function PlatoonsPanel() {
   const [platoons, setPlatoons] = useState<PlatoonRuntime[]>([])
   const [agents, setAgents] = useState<RosterAgent[]>([])
+  const [commanders, setCommanders] = useState<CommanderSnapshot[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -46,12 +62,14 @@ export function PlatoonsPanel() {
     setLoading(true)
     setError(null)
     try {
-      const [platoonData, rosterData] = await Promise.all([
+      const [platoonData, rosterData, commanderData] = await Promise.all([
         apiFetch<PlatoonResponse>('/api/platoons'),
         apiFetch<RosterResponse>('/api/roster'),
+        apiFetch<CommanderResponse>('/api/platoon-commanders'),
       ])
       setPlatoons(platoonData.platoons || [])
       setAgents(rosterData.agents || [])
+      setCommanders(commanderData.commanders || [])
     } catch {
       setError('Unable to discover CLI platoons.')
     } finally {
@@ -78,7 +96,9 @@ export function PlatoonsPanel() {
 
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {platoons.map((platoon) => {
-          const ready = platoon.installed && platoon.running && (!platoon.authRequired || platoon.authenticated)
+          const commander = commanders.find(item => item.platoonId === platoon.id)
+          const runtimeReady = platoon.installed && platoon.running && (!platoon.authRequired || platoon.authenticated)
+          const ready = commander ? commander.commanderAvailable && !commander.blocked : runtimeReady
           return (
             <div key={platoon.id} className="rounded-xl border border-border bg-card p-4">
               <div className="flex items-start justify-between gap-3">
@@ -93,10 +113,17 @@ export function PlatoonsPanel() {
               <p className="text-sm text-muted-foreground mt-3 min-h-10">{platoon.description}</p>
               <div className="grid grid-cols-2 gap-2 mt-4 text-xs">
                 <Metric label="Runtime" value={platoon.running ? 'Running' : 'Stopped'} />
+                <Metric label="Commander" value={commander?.commanderName || 'Runtime native'} />
                 <Metric label="Version" value={platoon.version || 'Unknown'} />
+                <Metric label="Agents" value={commander ? String(commander.agents.length) : '—'} />
                 <Metric label="Installed" value={platoon.installed ? 'Yes' : 'No'} />
                 <Metric label="Auth" value={!platoon.authRequired ? 'Not required' : platoon.authenticated ? 'Ready' : 'Required'} />
               </div>
+              {commander?.blocked && (
+                <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                  Dispatch blocked by platoon commander safety stop.
+                </div>
+              )}
             </div>
           )
         })}
@@ -152,7 +179,7 @@ export function PlatoonsPanel() {
       </section>
 
       <div className="rounded-xl border border-border bg-card/60 p-4 text-sm text-muted-foreground">
-        <span className="font-medium text-foreground">Next layer:</span> platoon commander adapters, agent roster discovery, capability bids, and cross-CLI mission assignment. Gamut will be added after its filesystem configuration is repaired and its runtime contract is inspected.
+        <span className="font-medium text-foreground">Next layer:</span> capability bids, guarded cross-CLI mission assignment, and project-level team assembly. Gamut will be added after its filesystem configuration is repaired and its runtime contract is inspected.
       </div>
     </div>
   )

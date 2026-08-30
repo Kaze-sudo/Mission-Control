@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { getDatabase } from './db'
 import { discoverPlatoons } from './platoons'
+import { discoverPlatoonCommanders } from './platoon-commanders'
 
 export type RosterAvailability = 'available' | 'busy' | 'offline' | 'error'
 
@@ -35,17 +36,21 @@ interface DbAgentRow {
 }
 
 const CAPABILITY_KEYWORDS: Array<[RegExp, string]> = [
+  [/orchestrat|delegat|worker assignment|kanban coordination/i, 'orchestration'],
   [/architect|system design/i, 'architecture'],
-  [/backend|api|server/i, 'backend'],
-  [/database|postgres|sql|data/i, 'data'],
-  [/frontend|react|web/i, 'frontend'],
-  [/ui|ux|design/i, 'ui-ux'],
-  [/security|audit|hardening/i, 'security'],
-  [/test|qa|review|verif/i, 'testing-review'],
+  [/backend|api|server action/i, 'backend'],
+  [/database|postgres|prisma|sql|rls/i, 'data'],
+  [/frontend|react|web interface/i, 'frontend'],
+  [/\bui\b|\bux\b|responsive|touch interaction/i, 'ui-ux'],
+  [/security|authorization|authentication|tenant isolation|secrets/i, 'security'],
+  [/test|\bqa\b|review|verif|playwright|vitest|acceptance/i, 'testing-review'],
   [/research|analysis/i, 'research'],
-  [/devops|docker|deploy|infra/i, 'devops'],
-  [/unity|gameplay|game/i, 'game-development'],
-  [/construct|estimat/i, 'construction-estimating'],
+  [/devops|docker|infrastructure/i, 'devops'],
+  [/ci\/cd|deployment|release|vercel|production smoke/i, 'release-engineering'],
+  [/mobile|tablet|jobsite|field capture|inspection|camera-oriented/i, 'field-operations'],
+  [/unity|gameplay|game systems/i, 'game-development'],
+  [/estimating|takeoff|pricebook|xactimate|freebuff|material quantities/i, 'construction-estimating'],
+  [/jobs|clients|schedules|crews|subcontractors|suppliers|job packets/i, 'construction-operations'],
   [/document|docs|writer/i, 'documentation'],
 ]
 
@@ -88,7 +93,6 @@ function discoverFilesystemAgents(): Array<{ name: string; platoonId: string; de
   const home = os.homedir()
   const roots: Array<[string, string]> = [
     ['openclaw', path.join(home, '.openclaw', 'agents')],
-    ['hermes', path.join(home, '.hermes', 'profiles')],
     ['codex', path.join(home, '.codex', 'agents')],
     ['claude', path.join(home, '.claude', 'agents')],
     ['generic', path.join(home, '.agents')],
@@ -124,7 +128,11 @@ function normalizeAvailability(status: string | undefined, platoonReady: boolean
 
 export function getGlobalAgentRoster(workspaceId: number): GlobalRosterAgent[] {
   const db = getDatabase()
-  const platoonReady = new Map(discoverPlatoons().map(p => [p.id, p.health === 'ready']))
+  const platoonReady = new Map<string, boolean>(discoverPlatoons().map(p => [p.id, p.health === 'ready']))
+  const commanderSnapshots = discoverPlatoonCommanders()
+  for (const snapshot of commanderSnapshots) {
+    if (snapshot.commanderAvailable) platoonReady.set(snapshot.platoonId, true)
+  }
   const dbAgents = db.prepare(
     'SELECT id, name, role, status, config, runtime_type, workspace_path FROM agents WHERE workspace_id = ? AND hidden = 0'
   ).all(workspaceId) as DbAgentRow[]
@@ -143,12 +151,28 @@ export function getGlobalAgentRoster(workspaceId: number): GlobalRosterAgent[] {
     roster.set(`${platoonId}:${agent.name.toLowerCase()}`, {
       id: `mc:${agent.id}`, name: agent.name, platoonId, role: agent.role,
       archetype: agent.role || 'Generalist',
-      availability: normalizeAvailability(agent.status, platoonReady.get(platoonId as never) === true),
+      availability: normalizeAvailability(agent.status, platoonReady.get(platoonId) === true),
       definitionPath: agent.workspace_path, source: 'mission-control',
       capabilities: capabilitiesFor(agent.role, config),
       performance: { tasks: task?.total || 0, completed: task?.completed || 0,
         completionRate: task?.total ? Math.round((task.completed / task.total) * 100) : null },
     })
+  }
+
+  for (const snapshot of commanderSnapshots) {
+    for (const discovered of snapshot.agents) {
+      const key = `${snapshot.platoonId}:${discovered.name.toLowerCase()}`
+      if (roster.has(key)) continue
+      const role = discovered.role || (discovered.isCommander ? 'Platoon Commander' : 'Agent')
+      roster.set(key, {
+        id: `pc:${discovered.id}`, name: discovered.name,
+        platoonId: snapshot.platoonId, role, archetype: role,
+        availability: normalizeAvailability(undefined, snapshot.commanderAvailable),
+        definitionPath: discovered.definitionPath, source: 'filesystem',
+        capabilities: capabilitiesFor(role, {}, discovered.identity),
+        performance: { tasks: 0, completed: 0, completionRate: null },
+      })
+    }
   }
 
   for (const discovered of discoverFilesystemAgents()) {
@@ -159,7 +183,7 @@ export function getGlobalAgentRoster(workspaceId: number): GlobalRosterAgent[] {
     roster.set(key, {
       id: `fs:${discovered.platoonId}:${discovered.name}`, name: discovered.name,
       platoonId: discovered.platoonId, role, archetype: role,
-      availability: normalizeAvailability(undefined, platoonReady.get(discovered.platoonId as never) === true),
+      availability: normalizeAvailability(undefined, platoonReady.get(discovered.platoonId) === true),
       definitionPath: discovered.definitionPath, source: 'filesystem',
       capabilities: capabilitiesFor(role, {}, discovered.identity),
       performance: { tasks: 0, completed: 0, completionRate: null },
