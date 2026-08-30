@@ -1550,6 +1550,37 @@ const migrations: Migration[] = [
         db.exec(`ALTER TABLE agents ADD COLUMN claude_base_session_created_at TEXT DEFAULT NULL`)
       }
     }
+  },
+  {
+    // AgentOS: reference external CLI-native agents from projects without copying
+    // or relocating their profile/config files. Identity is platoon-scoped so
+    // two runtimes may safely expose agents with the same display name.
+    id: '056_agentos_external_project_bindings',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS project_external_agent_bindings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          platoon_id TEXT NOT NULL,
+          external_agent_id TEXT NOT NULL,
+          agent_name TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'member',
+          definition_path TEXT,
+          capability_snapshot TEXT,
+          bound_by TEXT,
+          bound_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+          UNIQUE(project_id, platoon_id, external_agent_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_external_bindings_project
+          ON project_external_agent_bindings(project_id, workspace_id);
+        CREATE INDEX IF NOT EXISTS idx_external_bindings_agent
+          ON project_external_agent_bindings(platoon_id, external_agent_id);
+      `)
+    }
   }
 ]
 

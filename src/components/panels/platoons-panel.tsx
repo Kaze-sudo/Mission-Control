@@ -51,10 +51,39 @@ interface CommanderResponse {
   commanders?: CommanderSnapshot[]
 }
 
+interface ProjectSummary {
+  id: number
+  name: string
+  slug: string
+}
+
+interface ProjectResponse {
+  projects?: ProjectSummary[]
+}
+
+interface ExternalBinding {
+  id: number
+  projectId: number
+  platoonId: string
+  externalAgentId: string
+  agentName: string
+  role: string
+  capabilities: string[]
+  availability: string
+}
+
+interface BindingResponse {
+  bindings?: ExternalBinding[]
+}
+
 export function PlatoonsPanel() {
   const [platoons, setPlatoons] = useState<PlatoonRuntime[]>([])
   const [agents, setAgents] = useState<RosterAgent[]>([])
   const [commanders, setCommanders] = useState<CommanderSnapshot[]>([])
+  const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null)
+  const [bindings, setBindings] = useState<ExternalBinding[]>([])
+  const [bindingBusy, setBindingBusy] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -62,14 +91,18 @@ export function PlatoonsPanel() {
     setLoading(true)
     setError(null)
     try {
-      const [platoonData, rosterData, commanderData] = await Promise.all([
+      const [platoonData, rosterData, commanderData, projectData] = await Promise.all([
         apiFetch<PlatoonResponse>('/api/platoons'),
         apiFetch<RosterResponse>('/api/roster'),
         apiFetch<CommanderResponse>('/api/platoon-commanders'),
+        apiFetch<ProjectResponse>('/api/projects'),
       ])
       setPlatoons(platoonData.platoons || [])
       setAgents(rosterData.agents || [])
       setCommanders(commanderData.commanders || [])
+      const nextProjects = projectData.projects || []
+      setProjects(nextProjects)
+      setSelectedProjectId(current => current ?? nextProjects[0]?.id ?? null)
     } catch {
       setError('Unable to discover CLI platoons.')
     } finally {
@@ -78,6 +111,40 @@ export function PlatoonsPanel() {
   }, [])
 
   useEffect(() => { void refresh() }, [refresh])
+
+  const refreshBindings = useCallback(async (projectId: number | null) => {
+    if (!projectId) { setBindings([]); return }
+    try {
+      const data = await apiFetch<BindingResponse>(`/api/projects/${projectId}/external-agents`)
+      setBindings(data.bindings || [])
+    } catch {
+      setBindings([])
+    }
+  }, [])
+
+  useEffect(() => { void refreshBindings(selectedProjectId) }, [refreshBindings, selectedProjectId])
+
+  const toggleBinding = useCallback(async (agent: RosterAgent) => {
+    if (!selectedProjectId) return
+    const existing = bindings.find(binding => binding.externalAgentId === agent.id)
+    setBindingBusy(agent.id)
+    setError(null)
+    try {
+      if (existing) {
+        await apiFetch(`/api/projects/${selectedProjectId}/external-agents?bindingId=${existing.id}`, { method: 'DELETE' })
+      } else {
+        await apiFetch(`/api/projects/${selectedProjectId}/external-agents`, {
+          method: 'POST',
+          body: JSON.stringify({ externalAgentId: agent.id, role: agent.role }),
+        })
+      }
+      await refreshBindings(selectedProjectId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update project agent binding.')
+    } finally {
+      setBindingBusy(null)
+    }
+  }, [bindings, refreshBindings, selectedProjectId])
 
   return (
     <div className="p-4 md:p-6 space-y-5">
@@ -136,12 +203,25 @@ export function PlatoonsPanel() {
       )}
 
       <section className="space-y-3">
-        <div>
-          <p className="text-xs font-mono uppercase tracking-[0.18em] text-primary">Global Force Roster</p>
-          <h2 className="text-xl font-semibold mt-1">Discovered Agents</h2>
-          <p className="text-sm text-muted-foreground mt-1">
-            AgentOS only lists real agent definitions here. Skills, project instruction files, and session history are not treated as agents.
-          </p>
+        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+          <div>
+            <p className="text-xs font-mono uppercase tracking-[0.18em] text-primary">Global Force Roster</p>
+            <h2 className="text-xl font-semibold mt-1">Discovered Agents</h2>
+            <p className="text-sm text-muted-foreground mt-1">
+              AgentOS only lists real agent definitions here. Skills, project instruction files, and session history are not treated as agents.
+            </p>
+          </div>
+          <label className="text-xs text-muted-foreground min-w-56">
+            Project assignment
+            <select
+              className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+              value={selectedProjectId ?? ''}
+              onChange={event => setSelectedProjectId(event.target.value ? Number(event.target.value) : null)}
+            >
+              {projects.length === 0 && <option value="">No projects</option>}
+              {projects.map(project => <option key={project.id} value={project.id}>{project.name}</option>)}
+            </select>
+          </label>
         </div>
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {agents.map(agent => (
@@ -168,6 +248,15 @@ export function PlatoonsPanel() {
                 <Metric label="Source" value={agent.source} />
                 <Metric label="Tasks" value={agent.performance.tasks ? `${agent.performance.completed}/${agent.performance.tasks}` : 'No history'} />
               </div>
+              <Button
+                className="mt-3 w-full"
+                variant={bindings.some(binding => binding.externalAgentId === agent.id) ? 'outline' : 'default'}
+                size="sm"
+                disabled={!selectedProjectId || bindingBusy === agent.id}
+                onClick={() => void toggleBinding(agent)}
+              >
+                {bindings.some(binding => binding.externalAgentId === agent.id) ? 'Remove from Project' : 'Assign to Project'}
+              </Button>
             </div>
           ))}
         </div>
