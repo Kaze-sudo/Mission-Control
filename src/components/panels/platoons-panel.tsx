@@ -20,8 +20,25 @@ interface PlatoonResponse {
   platoons?: PlatoonRuntime[]
 }
 
+interface RosterAgent {
+  id: string
+  name: string
+  platoonId: string
+  role: string
+  archetype: string
+  availability: 'available' | 'busy' | 'offline' | 'error'
+  source: 'mission-control' | 'filesystem'
+  capabilities: { tags: string[]; source: 'declared' | 'inferred' | 'unrated' }
+  performance: { tasks: number; completed: number; completionRate: number | null }
+}
+
+interface RosterResponse {
+  agents?: RosterAgent[]
+}
+
 export function PlatoonsPanel() {
   const [platoons, setPlatoons] = useState<PlatoonRuntime[]>([])
+  const [agents, setAgents] = useState<RosterAgent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -29,8 +46,12 @@ export function PlatoonsPanel() {
     setLoading(true)
     setError(null)
     try {
-      const data = await apiFetch<PlatoonResponse>('/api/platoons')
-      setPlatoons(data.platoons || [])
+      const [platoonData, rosterData] = await Promise.all([
+        apiFetch<PlatoonResponse>('/api/platoons'),
+        apiFetch<RosterResponse>('/api/roster'),
+      ])
+      setPlatoons(platoonData.platoons || [])
+      setAgents(rosterData.agents || [])
     } catch {
       setError('Unable to discover CLI platoons.')
     } finally {
@@ -86,6 +107,49 @@ export function PlatoonsPanel() {
           No CLI runtimes were discovered on this station.
         </div>
       )}
+
+      <section className="space-y-3">
+        <div>
+          <p className="text-xs font-mono uppercase tracking-[0.18em] text-primary">Global Force Roster</p>
+          <h2 className="text-xl font-semibold mt-1">Discovered Agents</h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            AgentOS only lists real agent definitions here. Skills, project instruction files, and session history are not treated as agents.
+          </p>
+        </div>
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+          {agents.map(agent => (
+            <div key={agent.id} className="rounded-xl border border-border bg-card p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="font-semibold">{agent.name}</h3>
+                  <p className="text-xs text-muted-foreground mt-0.5">{agent.role}</p>
+                </div>
+                <span className="text-xs rounded-full px-2 py-1 bg-secondary text-secondary-foreground">
+                  {agent.platoonId}
+                </span>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                {agent.capabilities.tags.length > 0 ? agent.capabilities.tags.map(tag => (
+                  <span key={tag} className="text-[11px] rounded-md bg-primary/10 text-primary px-2 py-1">{tag}</span>
+                )) : (
+                  <span className="text-xs text-muted-foreground">Capabilities not rated yet</span>
+                )}
+              </div>
+              <div className="grid grid-cols-2 gap-2 mt-4 text-xs">
+                <Metric label="Availability" value={agent.availability} />
+                <Metric label="Archetype" value={agent.archetype} />
+                <Metric label="Source" value={agent.source} />
+                <Metric label="Tasks" value={agent.performance.tasks ? `${agent.performance.completed}/${agent.performance.tasks}` : 'No history'} />
+              </div>
+            </div>
+          ))}
+        </div>
+        {!loading && agents.length === 0 && (
+          <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">
+            No agent definitions discovered yet. Platoon runtimes can still be online while their agent rosters are empty.
+          </div>
+        )}
+      </section>
 
       <div className="rounded-xl border border-border bg-card/60 p-4 text-sm text-muted-foreground">
         <span className="font-medium text-foreground">Next layer:</span> platoon commander adapters, agent roster discovery, capability bids, and cross-CLI mission assignment. Gamut will be added after its filesystem configuration is repaired and its runtime contract is inspected.
