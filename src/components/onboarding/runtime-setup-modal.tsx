@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button'
 import { apiFetch, ApiError } from '@/lib/api-client'
 
 interface RuntimeSetupModalProps {
-  runtime: 'openclaw' | 'hermes' | 'claude' | 'codex' | 'opencode'
+  runtime: 'openclaw' | 'hermes' | 'claude' | 'codex' | 'opencode' | 'gamut'
   onClose: () => void
   onComplete: () => void
 }
@@ -17,6 +17,7 @@ export function RuntimeSetupModal({ runtime, onClose, onComplete }: RuntimeSetup
     claude: ClaudeSetup,
     codex: CodexSetup,
     opencode: OpenCodeSetup,
+    gamut: GamutSetup,
   }[runtime]
 
   return (
@@ -28,6 +29,27 @@ export function RuntimeSetupModal({ runtime, onClose, onComplete }: RuntimeSetup
   )
 }
 
+
+function GamutSetup({ onClose, onComplete }: { onClose: () => void; onComplete: () => void }) {
+  return (
+    <div className="p-6">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h3 className="text-lg font-semibold">Gamut</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">Discovered from the local Superagent/Gamut desktop data store.</p>
+        </div>
+        <button type="button" onClick={onClose} className="text-muted-foreground hover:text-foreground">
+          <svg className="w-5 h-5" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="M4 4l8 8M12 4l-8 8" /></svg>
+        </button>
+      </div>
+      <div className="p-4 rounded-lg border border-border/30 bg-secondary/20 text-sm text-muted-foreground space-y-2">
+        <p>AgentOS can discover Gamut agents, inspect their project-mount health, and include them in force planning.</p>
+        <p>Gamut remains desktop-managed. AgentOS will not install it, modify its authentication, or dispatch work through it until a supported Gamut control interface is verified.</p>
+      </div>
+      <div className="flex justify-end mt-4"><Button size="sm" onClick={onComplete}>Done</Button></div>
+    </div>
+  )
+}
 function OpenCodeSetup({ onClose, onComplete }: { onClose: () => void; onComplete: () => void }) {
   return (
     <div className="p-6">

@@ -189,7 +189,7 @@ export function parseScriptReviewVerdict(text: string): ScriptReviewResult | nul
   return null
 }
 
-export type RuntimeId = 'openclaw' | 'hermes' | 'claude' | 'codex' | 'opencode'
+export type RuntimeId = 'openclaw' | 'hermes' | 'claude' | 'codex' | 'opencode' | 'gamut'
 export type DeploymentMode = 'local' | 'docker'
 
 export interface RuntimeStatus {
@@ -250,6 +250,12 @@ const RUNTIME_META: Record<RuntimeId, RuntimeMeta> = {
   opencode: {
     name: 'OpenCode',
     description: 'AI coding agent for the terminal with local SQLite-backed session storage.',
+    authRequired: false,
+    authHint: '',
+  },
+  gamut: {
+    name: 'Gamut',
+    description: 'Desktop multi-agent platform backed by Superagent workspaces and WSL2 runtimes.',
     authRequired: false,
     authHint: '',
   },
@@ -345,6 +351,17 @@ export const RUNTIME_CAPABILITIES: Record<RuntimeId, RuntimeCapabilities> = {
   },
   opencode: {
     dispatch: false, // read-only session scanner; no dispatch path
+    session_resume: false,
+    pty: false,
+    workspace_cwd: false,
+    tool_policy: false,
+    budget_cap: false,
+    structured_output: false,
+    skills_inventory: false,
+    receipts: { ...NO_RECEIPTS },
+  },
+  gamut: {
+    dispatch: false, // roster + mount health only until a supported Gamut control interface is verified
     session_resume: false,
     pty: false,
     workspace_cwd: false,
@@ -625,12 +642,33 @@ function detectOpenCode(): RuntimeStatus {
   return { id: 'opencode', ...meta, installed, version, running, authenticated: installed }
 }
 
+function detectGamut(): RuntimeStatus {
+  const meta = RUNTIME_META.gamut
+  const appData = process.env.APPDATA || join(require('node:os').homedir(), 'AppData', 'Roaming')
+  const localAppData = process.env.LOCALAPPDATA || join(require('node:os').homedir(), 'AppData', 'Local')
+  const root = join(appData, 'Superagent')
+  const installed = existsSync(join(root, 'settings.json')) && existsSync(join(root, 'agents'))
+  let version: string | null = null
+  try {
+    const pending = join(localAppData, 'superagent-updater', 'pending', 'update-info.json')
+    if (existsSync(pending)) {
+      const info = JSON.parse(readFileSync(pending, 'utf8')) as { fileName?: string }
+      version = info.fileName?.match(/Gamut-([0-9][^-]*)-Setup/i)?.[1] || null
+    }
+  } catch { /* updater metadata is optional */ }
+  // Inventory discovery is safe, but a supported Gamut control/dispatch
+  // interface has not been verified yet. Report the runtime conservatively as
+  // not running so AgentOS cannot treat this platoon as dispatch-ready.
+  return { id: 'gamut', ...meta, installed, version, running: false, authenticated: installed }
+}
+
 const DETECTORS: Record<RuntimeId, () => RuntimeStatus> = {
   openclaw: detectOpenClaw,
   hermes: detectHermes,
   claude: detectClaude,
   codex: detectCodex,
   opencode: detectOpenCode,
+  gamut: detectGamut,
 }
 
 /**
@@ -704,6 +742,7 @@ export function startInstall(runtime: RuntimeId, mode: DeploymentMode): InstallJ
     claude: installClaudeLocal,
     codex: installCodexLocal,
     opencode: installOpenCodeLocal,
+    gamut: installGamutLocal,
   }
   const installFn = INSTALL_FNS[runtime] || installOpenClawLocal
   installFn(job).catch((err) => {
@@ -935,6 +974,13 @@ async function installOpenCodeLocal(job: InstallJob): Promise<void> {
     job.status = 'failed'
     job.error = 'brew install failed — see output above'
   }
+  job.finishedAt = Date.now()
+}
+
+async function installGamutLocal(job: InstallJob): Promise<void> {
+  job.status = 'failed'
+  job.error = 'Gamut is managed by its desktop installer/updater; AgentOS does not install it automatically.'
+  job.output += `> ${job.error}\n`
   job.finishedAt = Date.now()
 }
 

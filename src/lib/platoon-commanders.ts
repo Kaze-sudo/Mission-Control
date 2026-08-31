@@ -42,6 +42,20 @@ function markdownSection(content: string, heading: string): string {
   return content.match(pattern)?.[1]?.trim() || ''
 }
 
+
+function frontmatterScalar(content: string, key: string): string | null {
+  const match = content.match(new RegExp(`^${key}\\s*:\\s*(.+)$`, 'mi'))
+  return match?.[1]?.trim().replace(/^['\"]|['\"]$/g, '') || null
+}
+
+function gamutCapabilityText(identity: string): string {
+  const name = frontmatterScalar(identity, 'name') || ''
+  const description = frontmatterScalar(identity, 'description') || ''
+  const mission = identity.match(/(?:^|\n)Mission:\s*([^\n]+)/i)?.[1]?.trim() || ''
+  const primary = identity.match(/Primary ownership:\s*([^\n]+)/i)?.[1]?.trim() || ''
+  const tools = identity.match(/Tools(?:\/workflow)?:\s*([^\n]+)/i)?.[1]?.trim() || ''
+  return [name, description, mission, primary, tools].filter(Boolean).join('\n')
+}
 function hermesCapabilityText(identity: string, profile: string): string {
   const description = yamlScalar(profile, 'description') || ''
   const role = markdownSection(identity, 'ROLE')
@@ -136,7 +150,79 @@ class CodexCommanderAdapter implements PlatoonCommanderAdapter {
   }
 }
 
-const ADAPTERS: PlatoonCommanderAdapter[] = [new HermesCommanderAdapter(), new CodexCommanderAdapter()]
+
+class GamutCommanderAdapter implements PlatoonCommanderAdapter {
+  readonly platoonId = 'gamut'
+
+  discover(): PlatoonCommanderSnapshot {
+    const appData = process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming')
+    const root = process.env.GAMUT_AGENTS_DIR || path.join(appData, 'Superagent', 'agents')
+    const agents: PlatoonAgentDescriptor[] = []
+    const mountProblems: string[] = []
+    if (existsSync(root)) {
+      for (const slug of readdirSync(root)) {
+        const dir = path.join(root, slug)
+        try { if (!statSync(dir).isDirectory()) continue } catch { continue }
+        const workspace = path.join(dir, 'workspace')
+        const identity = readText(path.join(workspace, 'CLAUDE.md'))
+        if (!identity) continue
+        const displayName = frontmatterScalar(identity, 'name') || slug
+        const description = frontmatterScalar(identity, 'description') || ''
+        const lowerName = displayName.toLowerCase()
+        const isCommander = /chief of staff|orchestrator|platoon commander/.test(lowerName)
+        const role = isCommander ? 'Platoon Commander' : description || displayName
+
+        // Mount health is required only when an instantiated agent's permanent
+        // instructions declare a concrete Windows project path. Generic Gamut
+        // agents without a project mount remain valid inventory entries.
+        const declaredDbz = /D:\\DBZ Tactics|\/mounts\/DBZ Tactics/i.test(identity)
+        if (declaredDbz) {
+          const mountsRaw = readText(path.join(dir, 'mounts.json'))
+          let validMount = false
+          try {
+            const parsedMounts = JSON.parse(mountsRaw.replace(/^\uFEFF/, '')) as Array<{ hostPath?: string; containerPath?: string }> | { hostPath?: string; containerPath?: string }
+            const mounts = Array.isArray(parsedMounts) ? parsedMounts : [parsedMounts]
+            validMount = mounts.some(m =>
+              m.hostPath === 'D:\\DBZ Tactics' &&
+              m.containerPath === '/mounts/DBZ Tactics' &&
+              existsSync(m.hostPath),
+            )
+          } catch { /* missing/invalid mount */ }
+          if (!validMount) mountProblems.push(`${displayName} (${slug})`)
+        }
+
+        agents.push({
+          id: `gamut:${slug}`,
+          name: displayName,
+          role,
+          definitionPath: dir,
+          identity: gamutCapabilityText(identity),
+          model: null,
+          isCommander,
+        })
+      }
+    }
+
+    const commander = agents.find(agent => agent.isCommander)
+    const notes: string[] = []
+    if (mountProblems.length) notes.push(`Project mount issues: ${mountProblems.join(', ')}`)
+    if (!agents.length) notes.push('No instantiated Gamut agents discovered')
+    notes.push('Gamut inventory is discoverable, but AgentOS dispatch remains disabled until a supported Gamut control interface is verified.')
+    return {
+      platoonId: this.platoonId,
+      commanderName: commander?.name || 'Gamut',
+      commanderAvailable: false,
+      blocked: true,
+      blockReason: mountProblems.length
+        ? `Gamut project mount health failed for ${mountProblems.length} agent(s)`
+        : 'Gamut dispatch adapter is not yet enabled',
+      inventoryMode: 'native-profiles',
+      agents,
+      notes,
+    }
+  }
+}
+const ADAPTERS: PlatoonCommanderAdapter[] = [new HermesCommanderAdapter(), new CodexCommanderAdapter(), new GamutCommanderAdapter()]
 
 export function discoverPlatoonCommanders(): PlatoonCommanderSnapshot[] {
   return ADAPTERS.map(adapter => adapter.discover())
