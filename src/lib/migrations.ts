@@ -1591,6 +1591,33 @@ const migrations: Migration[] = [
       }
       db.exec(`CREATE INDEX IF NOT EXISTS idx_external_bindings_routing_agent ON project_external_agent_bindings(routing_agent_name)`)
     }
+  },
+  {
+    id: '058_agentos_routing_decisions',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agentos_routing_decisions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id INTEGER NOT NULL,
+          project_id INTEGER,
+          workspace_id INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          requirements_json TEXT NOT NULL,
+          candidates_json TEXT NOT NULL,
+          selected_external_agent_id TEXT,
+          selected_platoon_id TEXT,
+          selected_routing_agent_name TEXT,
+          reason TEXT,
+          actor TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_routing_decisions_task ON agentos_routing_decisions(task_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agentos_routing_decisions_project ON agentos_routing_decisions(project_id, created_at DESC);
+      `)
+    }
   }
 ]
 

@@ -126,6 +126,34 @@ function normalizeAvailability(status: string | undefined, platoonReady: boolean
   return 'available'
 }
 
+function loadExternalPerformance(db: ReturnType<typeof getDatabase>, workspaceId: number) {
+  const rows = db.prepare(`
+    SELECT a.config, COUNT(t.id) total,
+           SUM(CASE WHEN t.status = 'done' THEN 1 ELSE 0 END) completed
+    FROM agents a
+    LEFT JOIN tasks t ON t.workspace_id = a.workspace_id AND t.assigned_to = a.name
+    WHERE a.workspace_id = ? AND a.source = 'agentos-external'
+    GROUP BY a.id, a.config
+  `).all(workspaceId) as Array<{ config: string | null; total: number; completed: number | null }>
+
+  const result = new Map<string, { tasks: number; completed: number; completionRate: number | null }>()
+  for (const row of rows) {
+    const config = parseConfig(row.config)
+    const agentos = config.agentos && typeof config.agentos === 'object'
+      ? config.agentos as Record<string, unknown>
+      : null
+    const externalAgentId = typeof agentos?.externalAgentId === 'string' ? agentos.externalAgentId : null
+    if (!externalAgentId) continue
+    const completed = row.completed || 0
+    result.set(externalAgentId, {
+      tasks: row.total || 0,
+      completed,
+      completionRate: row.total ? Math.round((completed / row.total) * 100) : null,
+    })
+  }
+  return result
+}
+
 export function getGlobalAgentRoster(workspaceId: number): GlobalRosterAgent[] {
   const db = getDatabase()
   const platoonReady = new Map<string, boolean>(discoverPlatoons().map(p => [p.id, p.health === 'ready']))
@@ -142,6 +170,7 @@ export function getGlobalAgentRoster(workspaceId: number): GlobalRosterAgent[] {
      FROM tasks WHERE workspace_id = ? AND assigned_to IS NOT NULL GROUP BY assigned_to`
   ).all(workspaceId) as Array<{ assigned_to: string; total: number; completed: number }>
   const taskMap = new Map(taskRows.map(row => [row.assigned_to, row]))
+  const externalPerformance = loadExternalPerformance(db, workspaceId)
   const roster = new Map<string, GlobalRosterAgent>()
 
   for (const agent of dbAgents) {
@@ -170,7 +199,7 @@ export function getGlobalAgentRoster(workspaceId: number): GlobalRosterAgent[] {
         availability: normalizeAvailability(undefined, snapshot.commanderAvailable),
         definitionPath: discovered.definitionPath, source: 'filesystem',
         capabilities: capabilitiesFor(role, {}, discovered.identity),
-        performance: { tasks: 0, completed: 0, completionRate: null },
+        performance: externalPerformance.get(`pc:${discovered.id}`) || { tasks: 0, completed: 0, completionRate: null },
       })
     }
   }
@@ -186,7 +215,7 @@ export function getGlobalAgentRoster(workspaceId: number): GlobalRosterAgent[] {
       availability: normalizeAvailability(undefined, platoonReady.get(discovered.platoonId) === true),
       definitionPath: discovered.definitionPath, source: 'filesystem',
       capabilities: capabilitiesFor(role, {}, discovered.identity),
-      performance: { tasks: 0, completed: 0, completionRate: null },
+      performance: externalPerformance.get(`fs:${discovered.platoonId}:${discovered.name}`) || { tasks: 0, completed: 0, completionRate: null },
     })
   }
 

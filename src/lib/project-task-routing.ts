@@ -51,6 +51,44 @@ function requirementsFromMetadata(metadata: Record<string, unknown>): MissionReq
   }
 }
 
+function recordRoutingDecision(input: {
+  db: ReturnType<typeof getDatabase>
+  taskId: number
+  projectId: number
+  workspaceId: number
+  status: 'selected' | 'no_candidate' | 'blocked'
+  requirements: MissionRequirements
+  candidates: ReturnType<typeof rankAgentsForMission>
+  selectedExternalAgentId?: string | null
+  selectedPlatoonId?: string | null
+  selectedRoutingAgentName?: string | null
+  reason?: string | null
+  actor?: string | null
+}) {
+  const candidateSnapshot = input.candidates.map(candidate => ({
+    externalAgentId: candidate.agent.id,
+    name: candidate.agent.name,
+    platoonId: candidate.agent.platoonId,
+    eligible: candidate.eligible,
+    score: candidate.score,
+    matchedRequired: candidate.matchedRequired,
+    missingRequired: candidate.missingRequired,
+    matchedPreferred: candidate.matchedPreferred,
+    reasons: candidate.reasons,
+  }))
+  input.db.prepare(`
+    INSERT INTO agentos_routing_decisions (
+      task_id, project_id, workspace_id, status, requirements_json, candidates_json,
+      selected_external_agent_id, selected_platoon_id, selected_routing_agent_name, reason, actor
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    input.taskId, input.projectId, input.workspaceId, input.status,
+    JSON.stringify(input.requirements), JSON.stringify(candidateSnapshot),
+    input.selectedExternalAgentId || null, input.selectedPlatoonId || null,
+    input.selectedRoutingAgentName || null, input.reason || null, input.actor || null,
+  )
+}
+
 export function routeTaskWithinProject(input: {
   taskId: number
   workspaceId: number
@@ -79,6 +117,11 @@ export function routeTaskWithinProject(input: {
 
   const bindings = listExternalProjectBindings(task.project_id, input.workspaceId)
   if (bindings.length === 0) {
+    recordRoutingDecision({
+      db, taskId: task.id, projectId: task.project_id, workspaceId: input.workspaceId,
+      status: 'no_candidate', requirements, candidates: [],
+      reason: 'Project has no external agent bindings', actor: input.actor,
+    })
     return { routed: false, reason: 'Project has no external agent bindings', taskId: task.id, projectId: task.project_id }
   }
 
@@ -90,12 +133,24 @@ export function routeTaskWithinProject(input: {
   )
   const winner = candidates.find(candidate => candidate.eligible)
   if (!winner) {
-    return { routed: false, reason: 'No bound agent satisfies the mission requirements and availability gates', taskId: task.id, projectId: task.project_id }
+    const reason = 'No bound agent satisfies the mission requirements and availability gates'
+    recordRoutingDecision({
+      db, taskId: task.id, projectId: task.project_id, workspaceId: input.workspaceId,
+      status: 'no_candidate', requirements, candidates, reason, actor: input.actor,
+    })
+    return { routed: false, reason, taskId: task.id, projectId: task.project_id }
   }
 
   const binding = bindings.find(item => item.externalAgentId === winner.agent.id)
   if (!binding?.routingAgentName) {
-    return { routed: false, reason: 'Selected agent binding has no routing proxy', taskId: task.id, projectId: task.project_id }
+    const reason = 'Selected agent binding has no routing proxy'
+    recordRoutingDecision({
+      db, taskId: task.id, projectId: task.project_id, workspaceId: input.workspaceId,
+      status: 'blocked', requirements, candidates,
+      selectedExternalAgentId: winner.agent.id, selectedPlatoonId: winner.agent.platoonId,
+      reason, actor: input.actor,
+    })
+    return { routed: false, reason, taskId: task.id, projectId: task.project_id }
   }
   const now = Math.floor(Date.now() / 1000)
   const nextMetadata = {
@@ -120,6 +175,15 @@ export function routeTaskWithinProject(input: {
     { external_agent_id: winner.agent.id, routing_agent_name: binding.routingAgentName, score: winner.score },
     input.workspaceId,
   )
+
+  recordRoutingDecision({
+    db, taskId: task.id, projectId: task.project_id, workspaceId: input.workspaceId,
+    status: 'selected', requirements, candidates,
+    selectedExternalAgentId: winner.agent.id,
+    selectedPlatoonId: winner.agent.platoonId,
+    selectedRoutingAgentName: binding.routingAgentName,
+    reason: winner.reasons.join('; '), actor: input.actor,
+  })
 
   return {
     routed: true, taskId: task.id, projectId: task.project_id,
