@@ -1618,6 +1618,26 @@ const migrations: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_agentos_routing_decisions_project ON agentos_routing_decisions(project_id, created_at DESC);
       `)
     }
+  },
+  {
+    id: '059_agentos_project_force_profiles',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agentos_project_force_profiles (
+          project_id INTEGER PRIMARY KEY,
+          workspace_id INTEGER NOT NULL,
+          required_capabilities_json TEXT NOT NULL DEFAULT '[]',
+          preferred_capabilities_json TEXT NOT NULL DEFAULT '[]',
+          preferred_platoons_json TEXT NOT NULL DEFAULT '[]',
+          max_team_size INTEGER,
+          updated_by TEXT,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_force_profiles_workspace ON agentos_project_force_profiles(workspace_id, project_id);
+      `)
+    }
   }
 ]
 
