@@ -14,6 +14,7 @@ import { TaskBoardPanel } from '@/components/panels/task-board-panel'
 import { ActivityFeedPanel } from '@/components/panels/activity-feed-panel'
 import { AgentSquadPanelPhase3 } from '@/components/panels/agent-squad-panel-phase3'
 import { PlatoonsPanel } from '@/components/panels/platoons-panel'
+import { ProjectCommandPanel } from '@/components/panels/project-command-panel'
 import { AgentCommsPanel } from '@/components/panels/agent-comms-panel'
 import { StandupPanel } from '@/components/panels/standup-panel'
 import { OrchestrationBar } from '@/components/panels/orchestration-bar'
@@ -582,6 +583,8 @@ function ContentRouter({ tab }: { tab: string }) {
       )
     case 'platoons':
       return <PlatoonsPanel />
+    case 'command':
+      return <ProjectCommandPanel />
     case 'notifications':
       return <NotificationsPanel />
     case 'standup':

@@ -1638,6 +1638,60 @@ const migrations: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_agentos_force_profiles_workspace ON agentos_project_force_profiles(workspace_id, project_id);
       `)
     }
+  },
+  {
+    id: '060_agentos_project_command_policy',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agentos_project_command (
+          project_id INTEGER PRIMARY KEY,
+          workspace_id INTEGER NOT NULL,
+          state TEXT NOT NULL DEFAULT 'draft' CHECK(state IN ('draft','ready','active','paused','blocked')),
+          auto_route INTEGER NOT NULL DEFAULT 0,
+          allow_reroute INTEGER NOT NULL DEFAULT 0,
+          fallback_behavior TEXT NOT NULL DEFAULT 'hold' CHECK(fallback_behavior IN ('hold','manual','best_available')),
+          allowed_platoons_json TEXT NOT NULL DEFAULT '[]',
+          max_project_concurrent INTEGER NOT NULL DEFAULT 3,
+          max_platoon_concurrent INTEGER NOT NULL DEFAULT 2,
+          max_agent_concurrent INTEGER NOT NULL DEFAULT 1,
+          activated_at INTEGER,
+          updated_by TEXT,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_project_command_workspace ON agentos_project_command(workspace_id, state, project_id);
+      `)
+    }
+  },
+  {
+    id: '061_agentos_task_handoffs',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agentos_task_handoffs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          from_task_id INTEGER NOT NULL,
+          to_task_id INTEGER,
+          from_routing_agent_name TEXT,
+          to_external_agent_id TEXT,
+          to_platoon_id TEXT,
+          requested_capabilities_json TEXT NOT NULL DEFAULT '[]',
+          instructions TEXT,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','completed','blocked','cancelled')),
+          created_by TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+          FOREIGN KEY (from_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY (to_task_id) REFERENCES tasks(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_handoffs_project ON agentos_task_handoffs(project_id, status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agentos_handoffs_tasks ON agentos_task_handoffs(from_task_id, to_task_id);
+      `)
+    }
   }
 ]
 

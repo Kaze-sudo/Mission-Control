@@ -2,6 +2,7 @@ import { getDatabase, db_helpers } from './db'
 import { listExternalProjectBindings } from './external-project-bindings'
 import { getGlobalAgentRoster } from './global-agent-roster'
 import { rankAgentsForMission, type MissionRequirements } from './agent-selection'
+import { getProjectCommand } from './project-command'
 
 interface TaskRouteRow {
   id: number
@@ -104,8 +105,10 @@ export function routeTaskWithinProject(input: {
   if (['done', 'failed', 'quality_review', 'review'].includes(task.status)) {
     return { routed: false, reason: `Task status ${task.status} is not routable`, taskId: task.id, projectId: task.project_id }
   }
-  if (task.assigned_to && !input.allowReassign) {
-    return { routed: false, reason: 'Task is already assigned', taskId: task.id, projectId: task.project_id }
+  const command = getProjectCommand(task.project_id, input.workspaceId)
+  const canReassign = input.allowReassign ?? command.policy.allowReroute
+  if (task.assigned_to && !canReassign) {
+    return { routed: false, reason: 'Task is already assigned and project policy does not allow rerouting', taskId: task.id, projectId: task.project_id }
   }
   const metadata = parseMetadata(task.metadata)
   const fromMetadata = requirementsFromMetadata(metadata)
@@ -127,13 +130,24 @@ export function routeTaskWithinProject(input: {
 
   const roster = getGlobalAgentRoster(input.workspaceId)
   const boundIds = new Set(bindings.map(binding => binding.externalAgentId))
-  const candidates = rankAgentsForMission(
-    roster.filter(agent => boundIds.has(agent.id)),
-    requirements,
-  )
-  const winner = candidates.find(candidate => candidate.eligible)
+  const allowed = new Set(command.policy.allowedPlatoons)
+  const allowedRoster = roster.filter(agent => boundIds.has(agent.id) && (allowed.size === 0 || allowed.has(agent.platoonId.toLowerCase())))
+  let candidates = rankAgentsForMission(allowedRoster, requirements)
+  let winner = candidates.find(candidate => candidate.eligible)
+  let fallbackUsed = false
+  if (!winner && command.policy.fallbackBehavior === 'best_available') {
+    candidates = rankAgentsForMission(allowedRoster, {
+      requiredCapabilities: [],
+      preferredCapabilities: [...requirements.requiredCapabilities, ...(requirements.preferredCapabilities || [])],
+      preferredPlatoons: requirements.preferredPlatoons,
+    })
+    winner = candidates.find(candidate => candidate.eligible)
+    fallbackUsed = !!winner
+  }
   if (!winner) {
-    const reason = 'No bound agent satisfies the mission requirements and availability gates'
+    const reason = command.policy.fallbackBehavior === 'manual'
+      ? 'No eligible candidate; project fallback policy requires manual assignment'
+      : 'No bound agent satisfies the mission requirements and availability gates'
     recordRoutingDecision({
       db, taskId: task.id, projectId: task.project_id, workspaceId: input.workspaceId,
       status: 'no_candidate', requirements, candidates, reason, actor: input.actor,
@@ -162,6 +176,7 @@ export function routeTaskWithinProject(input: {
       routingAgentName: binding.routingAgentName,
       score: winner.score,
       reasons: winner.reasons,
+      fallbackUsed,
       routedAt: now,
     },
   }
@@ -182,7 +197,7 @@ export function routeTaskWithinProject(input: {
     selectedExternalAgentId: winner.agent.id,
     selectedPlatoonId: winner.agent.platoonId,
     selectedRoutingAgentName: binding.routingAgentName,
-    reason: winner.reasons.join('; '), actor: input.actor,
+    reason: `${fallbackUsed ? 'Best-available fallback used; ' : ''}${winner.reasons.join('; ')}`, actor: input.actor,
   })
 
   return {

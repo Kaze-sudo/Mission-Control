@@ -13,6 +13,7 @@ import { pushTaskToGnap } from '@/lib/gnap-sync';
 import { config } from '@/lib/config';
 import { requireWorkspaceId } from '@/lib/enforcement/workspace-scope';
 import { routeTaskWithinProject } from '@/lib/project-task-routing';
+import { getProjectCommand } from '@/lib/project-command';
 
 function formatTicketRef(prefix?: string | null, num?: number | null): string | undefined {
   if (!prefix || typeof num !== 'number' || !Number.isFinite(num) || num <= 0) return undefined
@@ -327,9 +328,12 @@ export async function POST(request: NextRequest) {
     const agentosConfig = metadata.agentos && typeof metadata.agentos === 'object'
       ? metadata.agentos as Record<string, unknown>
       : {}
-    const agentosAutoRoute = !finalAssignedTo && (metadata.agentos_auto_route === true || agentosConfig.autoRoute === true)
+    const projectCommand = (() => { try { return getProjectCommand(resolvedProjectId, workspaceId) } catch { return null } })()
+    const agentosAutoRoute = !finalAssignedTo && (
+      metadata.agentos_auto_route === true || agentosConfig.autoRoute === true || projectCommand?.policy.autoRoute === true
+    )
     const routingResult = agentosAutoRoute
-      ? routeTaskWithinProject({ taskId, workspaceId, actor })
+      ? routeTaskWithinProject({ taskId, workspaceId, actor, allowReassign: projectCommand?.policy.allowReroute })
       : null
     if (routingResult?.routed && routingResult.selected) {
       db_helpers.ensureTaskSubscription(taskId, routingResult.selected.routingAgentName, workspaceId)
