@@ -128,6 +128,19 @@ function resolveGatewayAgentId(task: DispatchableTask): string {
   return task.agent_name
 }
 
+function resolveExternalAgentName(task: DispatchableTask): string {
+  if (task.agent_config) {
+    try {
+      const cfg = JSON.parse(task.agent_config)
+      const agentos = cfg.agentos && typeof cfg.agentos === 'object' ? cfg.agentos : null
+      if (agentos && typeof agentos.externalAgentName === 'string' && agentos.externalAgentName) {
+        return agentos.externalAgentName
+      }
+    } catch { /* ignore */ }
+  }
+  return task.agent_name
+}
+
 // ---------------------------------------------------------------------------
 // Host-CLI sandbox flags (issue #720)
 // ---------------------------------------------------------------------------
@@ -1385,8 +1398,9 @@ async function callHermesViaProfile(
     throw new Error('Hermes platoon dispatch is blocked by the orchestrator safety stop')
   }
 
-  const profile = commander.agents.find(agent => agent.name.toLowerCase() === task.agent_name.toLowerCase())
-  if (!profile) throw new Error(`Hermes profile not found for agent ${task.agent_name}`)
+  const externalAgentName = resolveExternalAgentName(task)
+  const profile = commander.agents.find(agent => agent.name.toLowerCase() === externalAgentName.toLowerCase())
+  if (!profile) throw new Error(`Hermes profile not found for agent ${externalAgentName}`)
 
   if (prompt.length > 24_000) {
     throw new Error('Hermes one-shot prompt exceeds the safe Windows command-line budget')
@@ -1902,6 +1916,10 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         // The platoon-level ESTOP is checked inside callHermesViaProfile and blocks
         // all dispatch while the orchestrator safety stop is active.
         agentResponse = await callHermesViaProfile(task, prompt)
+      } else if (String(task.agent_runtime_type || '').toLowerCase() === 'codex') {
+        // AgentOS Codex platoon dispatch uses the authenticated host Codex CLI.
+        // The routing proxy supplies project-scoped cwd through the existing sandbox resolver.
+        agentResponse = await callCodexViaCli(task, prompt, '')
       } else if (useDirectApi && !targetSession) {
         // Direct API dispatch — provider chosen by `dispatchModel`. No gateway needed.
         agentResponse = await callDirectly(task, prompt)

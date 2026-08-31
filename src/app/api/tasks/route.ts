@@ -12,6 +12,7 @@ import { pushTaskToGitHub, syncTaskOutbound } from '@/lib/github-sync-engine';
 import { pushTaskToGnap } from '@/lib/gnap-sync';
 import { config } from '@/lib/config';
 import { requireWorkspaceId } from '@/lib/enforcement/workspace-scope';
+import { routeTaskWithinProject } from '@/lib/project-task-routing';
 
 function formatTicketRef(prefix?: string | null, num?: number | null): string | undefined {
   if (!prefix || typeof num !== 'number' || !Number.isFinite(num) || num <= 0) return undefined
@@ -323,7 +324,19 @@ export async function POST(request: NextRequest) {
       );
     }
     
-    // Fetch the created task
+    const agentosConfig = metadata.agentos && typeof metadata.agentos === 'object'
+      ? metadata.agentos as Record<string, unknown>
+      : {}
+    const agentosAutoRoute = !finalAssignedTo && (metadata.agentos_auto_route === true || agentosConfig.autoRoute === true)
+    const routingResult = agentosAutoRoute
+      ? routeTaskWithinProject({ taskId, workspaceId, actor })
+      : null
+    if (routingResult?.routed && routingResult.selected) {
+      db_helpers.ensureTaskSubscription(taskId, routingResult.selected.routingAgentName, workspaceId)
+      eventBus.broadcast('task.updated', { id: taskId, workspace_id: workspaceId, agentos_routing: routingResult.selected })
+    }
+
+    // Fetch the created task after optional AgentOS routing
     const createdTask = db.prepare(`
       SELECT t.*, p.name as project_name, p.ticket_prefix as project_prefix
       FROM tasks t
@@ -355,7 +368,7 @@ export async function POST(request: NextRequest) {
     // Broadcast to SSE clients
     eventBus.broadcast('task.created', { ...parsedTask, workspace_id: workspaceId });
 
-    return NextResponse.json({ task: parsedTask }, { status: 201 });
+    return NextResponse.json({ task: parsedTask, ...(routingResult ? { agentosRouting: routingResult } : {}) }, { status: 201 });
   } catch (error) {
     logger.error({ err: error }, 'POST /api/tasks error');
     return NextResponse.json({ error: 'Failed to create task' }, { status: 500 });

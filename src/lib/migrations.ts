@@ -1581,6 +1581,16 @@ const migrations: Migration[] = [
           ON project_external_agent_bindings(platoon_id, external_agent_id);
       `)
     }
+  },
+  {
+    id: '057_agentos_routing_proxy_name',
+    up: (db) => {
+      const cols = db.prepare(`PRAGMA table_info(project_external_agent_bindings)`).all() as Array<{ name: string }>
+      if (!cols.some(c => c.name === 'routing_agent_name')) {
+        db.exec(`ALTER TABLE project_external_agent_bindings ADD COLUMN routing_agent_name TEXT`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_external_bindings_routing_agent ON project_external_agent_bindings(routing_agent_name)`)
+    }
   }
 ]
 

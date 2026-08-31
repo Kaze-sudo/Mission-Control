@@ -2114,6 +2114,10 @@ function CreateTaskModal({
   const t = useTranslations('taskBoard')
   const agentSessions = useAgentSessions(formData.assigned_to || undefined)
   const [isRecurring, setIsRecurring] = useState(false)
+  const [agentosAutoRoute, setAgentosAutoRoute] = useState(false)
+  const [agentosRequired, setAgentosRequired] = useState('')
+  const [agentosPreferred, setAgentosPreferred] = useState('')
+  const [agentosPlatoons, setAgentosPlatoons] = useState('')
   const [scheduleInput, setScheduleInput] = useState('')
   const [parsedSchedule, setParsedSchedule] = useState<{ cronExpr: string; humanReadable: string } | null>(null)
   const [scheduleError, setScheduleError] = useState('')
@@ -2158,6 +2162,13 @@ function CreateTaskModal({
     }
     if (formData.target_session) {
       metadata.target_session = formData.target_session
+    }
+    if (agentosAutoRoute && !formData.assigned_to) {
+      const csv = (value: string) => value.split(',').map(item => item.trim()).filter(Boolean)
+      metadata.agentos_auto_route = true
+      metadata.agentos_required_capabilities = csv(agentosRequired)
+      metadata.agentos_preferred_capabilities = csv(agentosPreferred)
+      metadata.agentos_preferred_platoons = csv(agentosPlatoons)
     }
 
     try {
@@ -2253,6 +2264,49 @@ function CreateTaskModal({
                   ))}
                 </select>
               </div>
+            </div>
+
+            <div className="border border-border rounded-md p-3 space-y-3">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={agentosAutoRoute}
+                  onChange={(e) => {
+                    setAgentosAutoRoute(e.target.checked)
+                    if (e.target.checked) setFormData(prev => ({ ...prev, assigned_to: '', target_session: '' }))
+                  }}
+                  className="mt-0.5 rounded border-border"
+                />
+                <span>
+                  <span className="block text-sm text-foreground">AgentOS auto-route</span>
+                  <span className="block text-[11px] text-muted-foreground">Choose the best eligible agent already bound to this project. Assigned tasks may dispatch on the next scheduler cycle.</span>
+                </span>
+              </label>
+              {agentosAutoRoute && (
+                <div className="space-y-2">
+                  <input
+                    type="text"
+                    value={agentosRequired}
+                    onChange={(e) => setAgentosRequired(e.target.value)}
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm"
+                    placeholder="Required capabilities, comma separated"
+                  />
+                  <input
+                    type="text"
+                    value={agentosPreferred}
+                    onChange={(e) => setAgentosPreferred(e.target.value)}
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm"
+                    placeholder="Preferred capabilities, comma separated"
+                  />
+                  <input
+                    type="text"
+                    value={agentosPlatoons}
+                    onChange={(e) => setAgentosPlatoons(e.target.value)}
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm"
+                    placeholder="Preferred platoons: hermes, codex, openclaw"
+                  />
+                </div>
+              )}
             </div>
 
             <div>
