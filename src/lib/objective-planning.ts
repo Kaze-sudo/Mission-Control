@@ -369,6 +369,7 @@ export function promoteReadyObjectiveMissions(): {
 }
 export function listProjectObjectives(projectId: number, workspaceId: number) {
   assertProject(projectId, workspaceId)
+  reconcileObjectiveStatuses({ projectId, workspaceId })
   const db = getDatabase()
   return (db.prepare(`
     SELECT id, project_id, workspace_id, title, description, status,
@@ -543,4 +544,75 @@ export function executeObjective(input: {
     command: activeCommand,
     routes,
   }
+}
+export function reconcileObjectiveStatuses(input: {
+  projectId?: number
+  workspaceId?: number
+} = {}): Array<{ objectiveId: number; previous: string; status: string }> {
+  const db = getDatabase()
+  const clauses = ["status NOT IN ('completed','cancelled')"]
+  const params: number[] = []
+  if (input.projectId !== undefined) {
+    clauses.push('project_id = ?')
+    params.push(input.projectId)
+  }
+  if (input.workspaceId !== undefined) {
+    clauses.push('workspace_id = ?')
+    params.push(input.workspaceId)
+  }
+  const objectives = db.prepare(`
+    SELECT id, project_id, workspace_id, status, plan_json
+    FROM agentos_objectives
+    WHERE ${clauses.join(' AND ')}
+  `).all(...params) as Array<{
+    id: number
+    project_id: number
+    workspace_id: number
+    status: string
+    plan_json: string
+  }>
+
+  const changed: Array<{ objectiveId: number; previous: string; status: string }> = []
+  for (const objective of objectives) {
+    let plan: { missions?: Array<{ taskId?: number }> } = {}
+    try { plan = JSON.parse(objective.plan_json || '{}') } catch {}
+    const taskIds = (plan.missions || [])
+      .map(mission => mission.taskId)
+      .filter((value): value is number => Number.isInteger(value))
+    if (taskIds.length === 0) continue
+
+    const placeholders = taskIds.map(() => '?').join(',')
+    const rows = db.prepare(`
+      SELECT id, status FROM tasks
+      WHERE project_id = ? AND workspace_id = ? AND id IN (${placeholders})
+    `).all(objective.project_id, objective.workspace_id, ...taskIds) as Array<{ id: number; status: string }>
+    if (rows.length !== taskIds.length) continue
+
+    const statuses = rows.map(row => row.status)
+    let next = objective.status
+    if (statuses.every(status => status === 'done')) next = 'completed'
+    else if (statuses.some(status => status === 'failed')) next = 'failed'
+    else if (statuses.some(status => !['backlog', 'inbox'].includes(status))) next = 'active'
+    else if (objective.status === 'draft') next = 'planned'
+
+    if (next === objective.status) continue
+    const now = Math.floor(Date.now() / 1000)
+    db.prepare(`
+      UPDATE agentos_objectives
+      SET status = ?, updated_at = ?
+      WHERE id = ? AND project_id = ? AND workspace_id = ?
+    `).run(next, now, objective.id, objective.project_id, objective.workspace_id)
+    db_helpers.logActivity(
+      'agentos_objective_status_changed',
+      'project',
+      objective.project_id,
+      'agentos',
+      `Objective ${objective.id} moved from ${objective.status} to ${next}`,
+      { objective_id: objective.id, previous_status: objective.status, status: next },
+      objective.workspace_id,
+    )
+    changed.push({ objectiveId: objective.id, previous: objective.status, status: next })
+  }
+
+  return changed
 }

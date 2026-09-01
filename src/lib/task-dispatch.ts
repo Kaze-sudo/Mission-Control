@@ -19,7 +19,7 @@ import { getMiniMaxApiKey, resolveMiniMaxEndpoint } from './minimax'
 import { getPlatoonCommander } from './platoon-commanders'
 import { runGamutAgent } from './gamut-host'
 import { checkAgentOSDispatchGuard } from './project-command'
-import { promoteReadyObjectiveMissions } from './objective-planning'
+import { promoteReadyObjectiveMissions, reconcileObjectiveStatuses } from './objective-planning'
 import { createDelegationForTask, getLatestDelegationForTask, updateDelegation } from './delegation-ledger'
 import type Database from 'better-sqlite3'
 
@@ -1866,6 +1866,7 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
   // Newly ready missions route through the normal project/specialist selector,
   // then still pass the AgentOS project-command guard below before execution.
   promoteReadyObjectiveMissions()
+  reconcileObjectiveStatuses()
 
   const tasks = db.prepare(`
     SELECT t.*, a.name as agent_name, a.id as agent_id, a.config as agent_config,
