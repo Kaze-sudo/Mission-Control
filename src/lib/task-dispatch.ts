@@ -17,6 +17,7 @@ import { syncTaskOutbound } from './github-sync-engine'
 import { classifyModelProvider, getDispatchModelId, getModelByAlias } from './models'
 import { getMiniMaxApiKey, resolveMiniMaxEndpoint } from './minimax'
 import { getPlatoonCommander } from './platoon-commanders'
+import { runGamutAgent } from './gamut-host'
 import type Database from 'better-sqlite3'
 
 const AGENT_DISPATCH_ACCEPT_TIMEOUT_MS = 60_000
@@ -139,6 +140,17 @@ function resolveExternalAgentName(task: DispatchableTask): string {
     } catch { /* ignore */ }
   }
   return task.agent_name
+}
+
+function resolveExternalAgentId(task: DispatchableTask): string | null {
+  if (!task.agent_config) return null
+  try {
+    const cfg = JSON.parse(task.agent_config)
+    const agentos = cfg.agentos && typeof cfg.agentos === 'object' ? cfg.agentos : null
+    return agentos && typeof agentos.externalAgentId === 'string' ? agentos.externalAgentId : null
+  } catch {
+    return null
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1388,6 +1400,24 @@ async function callCodexViaCli(
 }
 
 
+async function callGamutViaHost(task: DispatchableTask, prompt: string): Promise<AgentResponseParsed> {
+  const commander = getPlatoonCommander('gamut')
+  if (!commander) throw new Error('Gamut platoon commander adapter is unavailable')
+  if (commander.blocked || !commander.commanderAvailable) {
+    throw new Error(commander.blockReason || 'Gamut platoon dispatch is unavailable')
+  }
+
+  const externalId = resolveExternalAgentId(task)
+  const prefix = 'pc:gamut:'
+  const slug = externalId?.startsWith(prefix) ? externalId.slice(prefix.length) : null
+  if (!slug) throw new Error('Gamut routing proxy is missing its native agent slug')
+  const descriptor = commander.agents.find(agent => agent.id === `gamut:${slug}`)
+  if (!descriptor) throw new Error(`Gamut agent ${slug} is not currently discoverable`)
+
+  logger.info({ taskId: task.id, agent: descriptor.name, gamutSlug: slug }, 'Dispatching task through Gamut host API')
+  const result = await runGamutAgent({ slug, message: prompt, timeoutMs: 300_000 })
+  return { text: result.text, sessionId: result.sessionId }
+}
 async function callHermesViaProfile(
   task: DispatchableTask,
   prompt: string,
@@ -1920,6 +1950,10 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         // AgentOS Codex platoon dispatch uses the authenticated host Codex CLI.
         // The routing proxy supplies project-scoped cwd through the existing sandbox resolver.
         agentResponse = await callCodexViaCli(task, prompt, '')
+      } else if (String(task.agent_runtime_type || '').toLowerCase() === 'gamut') {
+        // Gamut dispatch goes through the desktop host's official local API.
+        // The host owns container startup, native agent policy, and session lifecycle.
+        agentResponse = await callGamutViaHost(task, prompt)
       } else if (useDirectApi && !targetSession) {
         // Direct API dispatch — provider chosen by `dispatchModel`. No gateway needed.
         agentResponse = await callDirectly(task, prompt)

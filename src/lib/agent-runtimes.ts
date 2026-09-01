@@ -8,6 +8,7 @@ import { scanForInjection } from './injection-guard'
 import { isHermesInstalled, isHermesGatewayRunning, clearHermesDetectionCache } from './hermes-sessions'
 import { isOpenCodeInstalled, getOpenCodeVersion, scanOpenCodeSessions } from './opencode-sessions'
 import { logger } from './logger'
+import { isGamutHostListeningSync } from './gamut-host'
 import {
   isValidInstallerSha256,
   resolvePinnedUserToolSpec,
@@ -361,13 +362,13 @@ export const RUNTIME_CAPABILITIES: Record<RuntimeId, RuntimeCapabilities> = {
     receipts: { ...NO_RECEIPTS },
   },
   gamut: {
-    dispatch: false, // roster + mount health only until a supported Gamut control interface is verified
-    session_resume: false,
+    dispatch: true, // official local host API: POST /api/agents/:id/sessions
+    session_resume: true, // host API supports POST /sessions/:sessionId/messages
     pty: false,
-    workspace_cwd: false,
-    tool_policy: false,
-    budget_cap: false,
-    structured_output: false,
+    workspace_cwd: false, // Gamut agent mounts/workspace are controlled by the host profile
+    tool_policy: false, // project/profile policy remains Gamut-owned; AgentOS does not override it
+    budget_cap: false, // AgentOS does not inject per-task Gamut budget overrides yet
+    structured_output: false, // host transcript is structured, but agent response remains prose/tool events
     skills_inventory: false,
     receipts: { ...NO_RECEIPTS },
   },
@@ -656,10 +657,8 @@ function detectGamut(): RuntimeStatus {
       version = info.fileName?.match(/Gamut-([0-9][^-]*)-Setup/i)?.[1] || null
     }
   } catch { /* updater metadata is optional */ }
-  // Inventory discovery is safe, but a supported Gamut control/dispatch
-  // interface has not been verified yet. Report the runtime conservatively as
-  // not running so AgentOS cannot treat this platoon as dispatch-ready.
-  return { id: 'gamut', ...meta, installed, version, running: false, authenticated: installed }
+  const running = installed && isGamutHostListeningSync()
+  return { id: 'gamut', ...meta, installed, version, running, authenticated: installed && running }
 }
 
 const DETECTORS: Record<RuntimeId, () => RuntimeStatus> = {

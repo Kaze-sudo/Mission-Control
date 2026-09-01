@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { isGamutHostListeningSync } from './gamut-host'
 
 export interface PlatoonAgentDescriptor {
   id: string
@@ -204,18 +205,19 @@ class GamutCommanderAdapter implements PlatoonCommanderAdapter {
     }
 
     const commander = agents.find(agent => agent.isCommander)
+    const hostReady = isGamutHostListeningSync()
     const notes: string[] = []
     if (mountProblems.length) notes.push(`Project mount issues: ${mountProblems.join(', ')}`)
     if (!agents.length) notes.push('No instantiated Gamut agents discovered')
-    notes.push('Gamut inventory is discoverable, but AgentOS dispatch remains disabled until a supported Gamut control interface is verified.')
+    if (!hostReady) notes.push('Gamut desktop host API is not running on the verified local control port.')
     return {
       platoonId: this.platoonId,
       commanderName: commander?.name || 'Gamut',
-      commanderAvailable: false,
-      blocked: true,
+      commanderAvailable: !!commander && agents.length > 0 && mountProblems.length === 0 && hostReady,
+      blocked: mountProblems.length > 0 || !hostReady,
       blockReason: mountProblems.length
         ? `Gamut project mount health failed for ${mountProblems.length} agent(s)`
-        : 'Gamut dispatch adapter is not yet enabled',
+        : !hostReady ? 'Gamut desktop host API is unavailable' : null,
       inventoryMode: 'native-profiles',
       agents,
       notes,
