@@ -35,6 +35,31 @@ interface DbAgentRow {
   workspace_path: string | null
 }
 
+interface DiscoveryCacheEntry {
+  at: number
+  platoons: ReturnType<typeof discoverPlatoons>
+  commanders: ReturnType<typeof discoverPlatoonCommanders>
+}
+
+let discoveryCache: DiscoveryCacheEntry | null = null
+
+function discoveryCacheMs(): number {
+  const raw = Number(process.env.AGENTOS_DISCOVERY_CACHE_MS || 5000)
+  return Number.isFinite(raw) ? Math.max(0, Math.min(60000, Math.trunc(raw))) : 5000
+}
+
+function getDiscoverySnapshot(): DiscoveryCacheEntry {
+  const now = Date.now()
+  const ttl = discoveryCacheMs()
+  if (discoveryCache && ttl > 0 && now - discoveryCache.at < ttl) return discoveryCache
+  discoveryCache = { at: now, platoons: discoverPlatoons(), commanders: discoverPlatoonCommanders() }
+  return discoveryCache
+}
+
+export function invalidateAgentDiscoveryCache(): void {
+  discoveryCache = null
+}
+
 const CAPABILITY_KEYWORDS: Array<[RegExp, string]> = [
   [/orchestrat|delegat|worker assignment|kanban coordination/i, 'orchestration'],
   [/architect|system design/i, 'architecture'],
@@ -171,8 +196,9 @@ function loadExternalPerformance(db: ReturnType<typeof getDatabase>, workspaceId
 
 export function getGlobalAgentRoster(workspaceId: number): GlobalRosterAgent[] {
   const db = getDatabase()
-  const platoonReady = new Map<string, boolean>(discoverPlatoons().map(p => [p.id, p.health === 'ready']))
-  const commanderSnapshots = discoverPlatoonCommanders()
+  const discovery = getDiscoverySnapshot()
+  const platoonReady = new Map<string, boolean>(discovery.platoons.map(p => [p.id, p.health === 'ready']))
+  const commanderSnapshots = discovery.commanders
   for (const snapshot of commanderSnapshots) {
     if (snapshot.commanderAvailable) platoonReady.set(snapshot.platoonId, true)
   }

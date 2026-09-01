@@ -3,10 +3,12 @@ import { listExternalProjectBindings } from './external-project-bindings'
 import { getGlobalAgentRoster } from './global-agent-roster'
 import { rankAgentsForMission, type MissionRequirements } from './agent-selection'
 import { getProjectCommand } from './project-command'
+import { inferMissionIntent } from './mission-intent'
 
 interface TaskRouteRow {
   id: number
   title: string
+  description: string | null
   status: string
   assigned_to: string | null
   project_id: number | null
@@ -50,6 +52,21 @@ function requirementsFromMetadata(metadata: Record<string, unknown>): MissionReq
     preferredCapabilities: arrayValue(nested.preferredCapabilities ?? metadata.agentos_preferred_capabilities),
     preferredPlatoons: arrayValue(nested.preferredPlatoons ?? metadata.agentos_preferred_platoons),
   }
+}
+
+function hasOwn(value: object, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key)
+}
+
+function inputDefinesCapabilities(requirements: Partial<MissionRequirements> | undefined): boolean {
+  return !!requirements && (hasOwn(requirements, 'requiredCapabilities') || hasOwn(requirements, 'preferredCapabilities'))
+}
+
+function metadataDisablesInference(metadata: Record<string, unknown>): boolean {
+  const nested = metadata.agentos && typeof metadata.agentos === 'object'
+    ? metadata.agentos as Record<string, unknown>
+    : {}
+  return nested.disableInference === true || metadata.agentos_disable_inference === true
 }
 
 function recordRoutingDecision(input: {
@@ -98,7 +115,7 @@ export function routeTaskWithinProject(input: {
   allowReassign?: boolean
 }): ProjectTaskRouteResult {
   const db = getDatabase()
-  const task = db.prepare('SELECT id, title, status, assigned_to, project_id, metadata FROM tasks WHERE id = ? AND workspace_id = ?')
+  const task = db.prepare('SELECT id, title, description, status, assigned_to, project_id, metadata FROM tasks WHERE id = ? AND workspace_id = ?')
     .get(input.taskId, input.workspaceId) as TaskRouteRow | undefined
   if (!task) return { routed: false, reason: 'Task not found', taskId: input.taskId, projectId: null }
   if (!task.project_id) return { routed: false, reason: 'Task has no project', taskId: task.id, projectId: null }
@@ -112,9 +129,19 @@ export function routeTaskWithinProject(input: {
   }
   const metadata = parseMetadata(task.metadata)
   const fromMetadata = requirementsFromMetadata(metadata)
+  const metadataDefinesCapabilities = fromMetadata.requiredCapabilities.length > 0
+    || (fromMetadata.preferredCapabilities?.length || 0) > 0
+  const shouldInferIntent = !inputDefinesCapabilities(input.requirements)
+    && !metadataDefinesCapabilities
+    && !metadataDisablesInference(metadata)
+  const inferredIntent = shouldInferIntent
+    ? inferMissionIntent(task.title, task.description || '')
+    : null
   const requirements: MissionRequirements = {
-    requiredCapabilities: input.requirements?.requiredCapabilities ?? fromMetadata.requiredCapabilities,
-    preferredCapabilities: input.requirements?.preferredCapabilities ?? fromMetadata.preferredCapabilities,
+    requiredCapabilities: input.requirements?.requiredCapabilities
+      ?? (metadataDefinesCapabilities ? fromMetadata.requiredCapabilities : inferredIntent?.requirements.requiredCapabilities || []),
+    preferredCapabilities: input.requirements?.preferredCapabilities
+      ?? (metadataDefinesCapabilities ? fromMetadata.preferredCapabilities : inferredIntent?.requirements.preferredCapabilities || []),
     preferredPlatoons: input.requirements?.preferredPlatoons ?? fromMetadata.preferredPlatoons,
   }
 
@@ -177,6 +204,12 @@ export function routeTaskWithinProject(input: {
       score: winner.score,
       reasons: winner.reasons,
       fallbackUsed,
+      intent: {
+        source: inferredIntent ? 'inferred' : 'explicit',
+        requiredCapabilities: requirements.requiredCapabilities,
+        preferredCapabilities: requirements.preferredCapabilities || [],
+        evidence: inferredIntent?.evidence || [],
+      },
       routedAt: now,
     },
   }
