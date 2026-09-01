@@ -49,12 +49,19 @@ function frontmatterScalar(content: string, key: string): string | null {
   return match?.[1]?.trim().replace(/^['\"]|['\"]$/g, '') || null
 }
 
+function inlineTaggedSection(content: string, label: string, nextLabels: string[]): string {
+  const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const next = nextLabels.map(escape).join('|')
+  const pattern = new RegExp(`${escape(label)}:\\s*([\\s\\S]*?)(?=\\s+(?:${next})\\s*:|$)`, 'i')
+  return content.match(pattern)?.[1]?.trim() || ''
+}
 function gamutCapabilityText(identity: string): string {
   const name = frontmatterScalar(identity, 'name') || ''
   const description = frontmatterScalar(identity, 'description') || ''
-  const mission = identity.match(/(?:^|\n)Mission:\s*([^\n]+)/i)?.[1]?.trim() || ''
-  const primary = identity.match(/Primary ownership:\s*([^\n]+)/i)?.[1]?.trim() || ''
-  const tools = identity.match(/Tools(?:\/workflow)?:\s*([^\n]+)/i)?.[1]?.trim() || ''
+  const mission = inlineTaggedSection(identity, 'Mission', ['Primary ownership', 'Non-ownership', 'Inputs'])
+  const primary = inlineTaggedSection(identity, 'Primary ownership', ['Non-ownership', 'Inputs', 'Deliverables'])
+  const tools = inlineTaggedSection(identity, 'Tools', ['Mandatory', 'Mandatory operating contract'])
+    || inlineTaggedSection(identity, 'Tools/workflow', ['Mandatory', 'Mandatory operating contract'])
   return [name, description, mission, primary, tools].filter(Boolean).join('\n')
 }
 function hermesCapabilityText(identity: string, profile: string): string {

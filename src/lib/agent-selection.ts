@@ -20,6 +20,35 @@ function normalize(values: string[] | undefined): string[] {
   return [...new Set((values || []).map(v => v.trim().toLowerCase()).filter(Boolean))]
 }
 
+const SPECIALIST_AFFINITY: Array<[string, RegExp]> = [
+  ['orchestration', /chief of staff|orchestrator|platoon commander/i],
+  ['architecture', /architect/i],
+  ['game-direction', /game director|systems designer/i],
+  ['combat-systems', /combat gameplay|combat systems/i],
+  ['tactical-encounters', /tactical battles|encounter designer/i],
+  ['enemy-ai', /enemy ai|boss engineer/i],
+  ['progression-transformations', /progression|transformation/i],
+  ['narrative-content', /narrative|world|content designer/i],
+  ['art-animation', /art|animation|technical art/i],
+  ['vfx-camera', /vfx|camera|combat presentation/i],
+  ['audio', /audio/i],
+  ['ui-input-accessibility', /ui ux|accessibility|input engineer/i],
+  ['save-data-tools', /save|data|developer tools/i],
+  ['performance-platform', /performance|platform/i],
+  ['build-repository', /build|repository/i],
+  ['multiplayer-networking', /multiplayer|online/i],
+  ['qa-release', /qa|playtest|release verification/i],
+  ['construction-estimating', /estimating|estimator|takeoff/i],
+]
+
+function specialistAffinity(agent: GlobalRosterAgent, capabilities: string[]): string[] {
+  const identity = `${agent.name}\n${agent.role}\n${agent.archetype}`
+  return capabilities.filter(capability => {
+    const pattern = SPECIALIST_AFFINITY.find(([tag]) => tag === capability)?.[1]
+    return !!pattern?.test(identity)
+  })
+}
+
 export function rankAgentsForMission(
   agents: GlobalRosterAgent[],
   requirements: MissionRequirements,
@@ -33,6 +62,8 @@ export function rankAgentsForMission(
     const matchedRequired = required.filter(tag => capabilities.has(tag))
     const missingRequired = required.filter(tag => !capabilities.has(tag))
     const matchedPreferred = preferred.filter(tag => capabilities.has(tag))
+    const specialistRequired = specialistAffinity(agent, matchedRequired)
+    const specialistPreferred = specialistAffinity(agent, matchedPreferred)
     const available = agent.availability === 'available' || agent.availability === 'busy'
     const eligible = available && missingRequired.length === 0
     const reasons: string[] = []
@@ -41,6 +72,8 @@ export function rankAgentsForMission(
     if (required.length === 0) score += 45
     else score += (matchedRequired.length / required.length) * 70
     if (preferred.length > 0) score += (matchedPreferred.length / preferred.length) * 15
+    score += specialistRequired.length * 12
+    score += specialistPreferred.length * 4
     if (agent.availability === 'available') score += 15
     else if (agent.availability === 'busy') score += 5
     if (preferredPlatoons.has(agent.platoonId.toLowerCase())) score += 5
@@ -49,6 +82,8 @@ export function rankAgentsForMission(
     if (matchedRequired.length) reasons.push(`Matched required: ${matchedRequired.join(', ')}`)
     if (missingRequired.length) reasons.push(`Missing required: ${missingRequired.join(', ')}`)
     if (matchedPreferred.length) reasons.push(`Matched preferred: ${matchedPreferred.join(', ')}`)
+    if (specialistRequired.length) reasons.push(`Specialist owner: ${specialistRequired.join(', ')}`)
+    if (specialistPreferred.length) reasons.push(`Preferred specialist: ${specialistPreferred.join(', ')}`)
     if (agent.availability === 'available') reasons.push('Available now')
     if (agent.availability === 'busy') reasons.push('Currently busy')
     if (!available) reasons.push(`Unavailable: ${agent.availability}`)
