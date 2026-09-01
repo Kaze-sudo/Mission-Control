@@ -1716,6 +1716,44 @@ const migrations: Migration[] = [
           ON agentos_objectives(project_id, workspace_id, status, created_at DESC);
       `)
     }
+  },
+  {
+    id: '063_agentos_delegations',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agentos_delegations (
+          id TEXT PRIMARY KEY,
+          task_id INTEGER NOT NULL,
+          project_id INTEGER,
+          workspace_id INTEGER NOT NULL,
+          objective_id INTEGER,
+          platoon_id TEXT,
+          specialist_name TEXT,
+          routing_agent_name TEXT,
+          runtime_type TEXT,
+          status TEXT NOT NULL DEFAULT 'claimed'
+            CHECK(status IN ('claimed','accepted','pending','completed','retrying','failed','cancelled')),
+          native_session_id TEXT,
+          native_run_id TEXT,
+          attempt INTEGER NOT NULL DEFAULT 1,
+          result_summary TEXT,
+          error_message TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          completed_at INTEGER,
+          FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+          FOREIGN KEY (objective_id) REFERENCES agentos_objectives(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_delegations_task
+          ON agentos_delegations(task_id, workspace_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agentos_delegations_project
+          ON agentos_delegations(project_id, workspace_id, status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agentos_delegations_native
+          ON agentos_delegations(native_session_id, native_run_id);
+      `)
+    }
   }
 ]
 

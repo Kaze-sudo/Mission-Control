@@ -20,6 +20,7 @@ import { getPlatoonCommander } from './platoon-commanders'
 import { runGamutAgent } from './gamut-host'
 import { checkAgentOSDispatchGuard } from './project-command'
 import { promoteReadyObjectiveMissions } from './objective-planning'
+import { createDelegationForTask, getLatestDelegationForTask, updateDelegation } from './delegation-ledger'
 import type Database from 'better-sqlite3'
 
 const AGENT_DISPATCH_ACCEPT_TIMEOUT_MS = 60_000
@@ -56,6 +57,7 @@ interface DispatchableTask {
   ticket_prefix: string | null
   project_ticket_no: number | null
   project_id: number | null
+  dispatch_attempts?: number | null
   tags?: string[]
   /** Raw tasks.metadata JSON — carries optional per-task sandbox overrides. */
   metadata?: string | null
@@ -648,6 +650,17 @@ export async function reconcileDeferredTaskCompletions(options: {
       { response_length: truncated.length, dispatch_session_id: nextMetadata.dispatch_session_id, dispatch_run_id: nextMetadata.dispatch_run_id },
       task.workspace_id
     )
+
+    const delegation = getLatestDelegationForTask(task.id, task.workspace_id)
+    if (delegation) {
+      updateDelegation(delegation.id, task.workspace_id, {
+        status: 'completed',
+        nativeSessionId: typeof nextMetadata.dispatch_session_id === 'string' ? nextMetadata.dispatch_session_id : null,
+        nativeRunId: typeof nextMetadata.dispatch_run_id === 'string' ? nextMetadata.dispatch_run_id : null,
+        resultSummary: truncated,
+        completed: true,
+      })
+    }
 
     promoted++
   }
@@ -1936,6 +1949,20 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
       task.workspace_id
     )
 
+    let delegationId: string | null = null
+    if (task.agent_source === 'agentos-external') {
+      const delegation = createDelegationForTask({
+        taskId: task.id,
+        projectId: task.project_id,
+        workspaceId: task.workspace_id,
+        routingAgentName: task.agent_name,
+        runtimeType: task.agent_runtime_type,
+        metadata: task.metadata,
+        attempt: (task.dispatch_attempts || 0) + 1,
+      })
+      delegationId = delegation.id
+    }
+
     try {
       // Check for previous Aegis rejection feedback
       const rejectionRow = db.prepare(`
@@ -2043,6 +2070,13 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
           { dispatch_session_id: targetSession, dispatch_run_id: pendingMeta.dispatch_run_id, async_state: asyncState },
           task.workspace_id
         )
+        if (delegationId) {
+          updateDelegation(delegationId, task.workspace_id, {
+            status: dispatchRunId ? 'pending' : 'accepted',
+            nativeSessionId: targetSession,
+            nativeRunId: dispatchRunId,
+          })
+        }
 
         results.push({ id: task.id, success: true })
         continue
@@ -2113,6 +2147,13 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
           { dispatch_session_id: dispatchSessionId, dispatch_run_id: pendingMeta.dispatch_run_id, async_state: asyncState },
           task.workspace_id
         )
+        if (delegationId) {
+          updateDelegation(delegationId, task.workspace_id, {
+            status: dispatchRunId ? 'pending' : 'accepted',
+            nativeSessionId: dispatchSessionId,
+            nativeRunId: dispatchRunId,
+          })
+        }
 
         results.push({ id: task.id, success: true })
         continue
@@ -2181,6 +2222,14 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         { response_length: agentResponse.text.length, dispatch_session_id: agentResponse.sessionId },
         task.workspace_id
       )
+      if (delegationId) {
+        updateDelegation(delegationId, task.workspace_id, {
+          status: 'completed',
+          nativeSessionId: agentResponse.sessionId,
+          resultSummary: truncated,
+          completed: true,
+        })
+      }
 
       results.push({ id: task.id, success: true })
       logger.info({ taskId: task.id, agent: task.agent_name }, 'Task dispatched and completed')
@@ -2196,6 +2245,13 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
 
       if (newAttempts >= maxDispatchRetries) {
         const failureMessage = `Dispatch failed ${newAttempts} times. Last: ${errorMsg.substring(0, 5000)}`
+        if (delegationId) {
+          updateDelegation(delegationId, task.workspace_id, {
+            status: 'failed',
+            errorMessage: failureMessage,
+            completed: true,
+          })
+        }
         // Too many failures — move to failed
         db.prepare('UPDATE tasks SET status = ?, error_message = ?, dispatch_attempts = ?, updated_at = ? WHERE id = ? AND workspace_id = ?')
           .run('failed', failureMessage, newAttempts, Math.floor(Date.now() / 1000), task.id, task.workspace_id)
@@ -2210,6 +2266,12 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         })
         syncAndEscalateIfFailed(task, 'failed', `Dispatch failed ${newAttempts} times`, newAttempts)
       } else {
+        if (delegationId) {
+          updateDelegation(delegationId, task.workspace_id, {
+            status: 'retrying',
+            errorMessage: errorMsg.substring(0, 5000),
+          })
+        }
         // Revert to assigned so it can be retried on the next tick
         db.prepare('UPDATE tasks SET status = ?, error_message = ?, dispatch_attempts = ?, updated_at = ? WHERE id = ? AND workspace_id = ?')
           .run('assigned', errorMsg.substring(0, 5000), newAttempts, Math.floor(Date.now() / 1000), task.id, task.workspace_id)
