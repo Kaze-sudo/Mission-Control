@@ -15,6 +15,9 @@ interface Binding { id:number; externalAgentId:string; agentName:string; platoon
 interface Task { id:number; title:string; status:string; priority:string; assigned_to:string|null; metadata?:Record<string,unknown>; ticket_ref?:string }
 interface Handoff { id:number; fromTaskId:number; toTaskId:number|null; toExternalAgentId:string|null; toPlatoonId:string|null; requestedCapabilities:string[]; instructions:string|null; status:string; createdAt:number }
 interface ForcePlan { readiness:{required:number;ready:number;percent:number;status:string}; missingCapabilities:string[]; blockedCapabilities:string[]; coverage:Array<{capability:string;covered:boolean;ready:boolean}> }
+interface ObjectiveMission { key:string; title:string; taskId:number; dependsOnTaskIds:number[]; requiredCapabilities:string[]; preferredCapabilities:string[] }
+interface Objective { id:number; title:string; description:string; status:string; created_at:number; plan?:{ source?:string; missions?:ObjectiveMission[] } }
+interface Delegation { id:string; taskId:number; objectiveId:number|null; platoonId:string|null; specialistName:string|null; routingAgentName:string|null; runtimeType:string|null; status:string; nativeSessionId:string|null; nativeRunId:string|null; attempt:number; resultSummary:string|null; errorMessage:string|null; createdAt:number; updatedAt:number; completedAt:number|null }
 
 const STATES: CommandRecord['state'][] = ['draft','ready','active','paused','blocked']
 
@@ -26,6 +29,11 @@ export function ProjectCommandPanel() {
   const [tasks,setTasks]=useState<Task[]>([])
   const [handoffs,setHandoffs]=useState<Handoff[]>([])
   const [force,setForce]=useState<ForcePlan|null>(null)
+  const [objectives,setObjectives]=useState<Objective[]>([])
+  const [delegations,setDelegations]=useState<Delegation[]>([])
+  const [objectiveTitle,setObjectiveTitle]=useState('')
+  const [objectiveDescription,setObjectiveDescription]=useState('')
+  const [objectiveBusy,setObjectiveBusy]=useState(false)
   const [handoffFrom,setHandoffFrom]=useState('')
   const [handoffCaps,setHandoffCaps]=useState('')
   const [handoffInstructions,setHandoffInstructions]=useState('')
@@ -39,17 +47,19 @@ export function ProjectCommandPanel() {
   },[])
 
   const loadContext=useCallback(async(id:number|null)=>{
-    if(!id){setCommand(null);setBindings([]);setTasks([]);setHandoffs([]);setForce(null);return}
+    if(!id){setCommand(null);setBindings([]);setTasks([]);setHandoffs([]);setForce(null);setObjectives([]);setDelegations([]);return}
     setLoading(true);setError(null)
     try{
-      const [c,b,t,h,f]=await Promise.all([
+      const [c,b,t,h,f,o,d]=await Promise.all([
         apiFetch<{command:CommandRecord}>(`/api/projects/${id}/agentos-command`),
         apiFetch<{bindings?:Binding[]}>(`/api/projects/${id}/external-agents`),
         apiFetch<{tasks?:Task[]}>(`/api/tasks?project_id=${id}&limit=200`),
         apiFetch<{handoffs?:Handoff[]}>(`/api/projects/${id}/agentos-handoffs`),
         apiFetch<ForcePlan>(`/api/projects/${id}/agentos-force-plan`),
+        apiFetch<{objectives?:Objective[]}>(`/api/projects/${id}/agentos-objectives`),
+        apiFetch<{delegations?:Delegation[]}>(`/api/projects/${id}/agentos-delegations`),
       ])
-      setCommand(c.command);setBindings(b.bindings||[]);setTasks(t.tasks||[]);setHandoffs(h.handoffs||[]);setForce(f)
+      setCommand(c.command);setBindings(b.bindings||[]);setTasks(t.tasks||[]);setHandoffs(h.handoffs||[]);setForce(f);setObjectives(o.objectives||[]);setDelegations(d.delegations||[])
     }catch(err){setError(err instanceof Error?err.message:'Failed to load project command view')}
     finally{setLoading(false)}
   },[])
@@ -65,6 +75,16 @@ export function ProjectCommandPanel() {
     }catch(err){setError(err instanceof Error?err.message:'Failed to update project command state')}
     finally{setSaving(false)}
   },[loadContext,projectId])
+
+  const createObjective=useCallback(async()=>{
+    if(!projectId||!objectiveTitle.trim())return
+    setObjectiveBusy(true);setError(null)
+    try{
+      await apiFetch(`/api/projects/${projectId}/agentos-objectives`,{method:'POST',body:JSON.stringify({title:objectiveTitle.trim(),description:objectiveDescription.trim()})})
+      setObjectiveTitle('');setObjectiveDescription('');await loadContext(projectId)
+    }catch(err){setError(err instanceof Error?err.message:'Failed to create objective')}
+    finally{setObjectiveBusy(false)}
+  },[loadContext,objectiveDescription,objectiveTitle,projectId])
 
   const createProjectHandoff=useCallback(async()=>{
     if(!projectId||!handoffFrom)return
@@ -151,6 +171,54 @@ export function ProjectCommandPanel() {
               <div className="mt-3 max-h-72 overflow-auto space-y-2">
                 {tasks.slice(0,20).map(t=><div key={t.id} className="rounded-lg border border-border/50 px-3 py-2"><div className="flex justify-between gap-2"><span className="text-sm font-medium">{t.ticket_ref?`${t.ticket_ref} `:''}{t.title}</span><span className="text-[10px] uppercase text-muted-foreground">{t.status}</span></div><div className="text-[10px] text-muted-foreground mt-1">{t.assigned_to||'Unassigned'} · {t.priority}</div></div>)}
                 {tasks.length===0&&<div className="text-sm text-muted-foreground">No project tasks yet.</div>}
+              </div>
+            </div>
+          </section>
+
+          <section className="grid gap-4 xl:grid-cols-2">
+            <div className="rounded-xl border border-border bg-card p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <div><p className="text-xs font-mono uppercase tracking-wider text-primary">Objectives</p><h2 className="text-lg font-semibold mt-1">Company objectives</h2></div>
+                <span className="text-xs text-muted-foreground">{objectives.length} recorded</span>
+              </div>
+              <div className="grid gap-2">
+                <input value={objectiveTitle} onChange={e=>setObjectiveTitle(e.target.value)} className="rounded-md border border-border bg-background px-3 py-2 text-sm" placeholder="Objective title"/>
+                <textarea value={objectiveDescription} onChange={e=>setObjectiveDescription(e.target.value)} className="min-h-20 rounded-md border border-border bg-background px-3 py-2 text-sm" placeholder="Describe the objective. Put independent missions on separate lines; use Then/Next/After for dependencies."/>
+                <div className="flex justify-end"><Button size="sm" disabled={objectiveBusy||!objectiveTitle.trim()} onClick={()=>void createObjective()}>{objectiveBusy?'Planning…':'Plan Objective'}</Button></div>
+              </div>
+              <div className="max-h-96 overflow-auto space-y-3">
+                {objectives.map(o=><div key={o.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
+                  <div className="flex items-start justify-between gap-3"><div><div className="text-sm font-medium">{o.title}</div><div className="text-[10px] text-muted-foreground mt-1">Objective #{o.id} · {o.plan?.source||'planned'}</div></div><span className="text-[10px] uppercase">{o.status}</span></div>
+                  {o.description&&<div className="text-xs text-foreground/75 mt-2">{o.description}</div>}
+                  <div className="mt-3 space-y-2">
+                    {(o.plan?.missions||[]).map(m=><div key={m.taskId} className="rounded border border-border/40 px-2.5 py-2">
+                      <div className="flex justify-between gap-2"><span className="text-xs font-medium">{m.key}: {m.title}</span><span className="text-[10px] text-muted-foreground">Task {m.taskId}</span></div>
+                      <div className="text-[10px] text-muted-foreground mt-1">{m.dependsOnTaskIds.length ? 'Depends on '+m.dependsOnTaskIds.map(id=>'Task '+id).join(', ') : 'Parallel-ready'}{m.requiredCapabilities.length ? ' · '+m.requiredCapabilities.join(', ') : ''}</div>
+                    </div>)}
+                  </div>
+                </div>)}
+                {objectives.length===0&&<div className="text-sm text-muted-foreground">No AgentOS objectives planned yet.</div>}
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-border bg-card p-4 space-y-4">
+              <div className="flex items-center justify-between">
+                <div><p className="text-xs font-mono uppercase tracking-wider text-primary">Delegations</p><h2 className="text-lg font-semibold mt-1">Platoon execution ledger</h2></div>
+                <span className="text-xs text-muted-foreground">{delegations.length} traced</span>
+              </div>
+              <div className="max-h-[32rem] overflow-auto space-y-2">
+                {delegations.map(d=><div key={d.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
+                  <div className="flex justify-between gap-2"><span className="text-sm font-medium">Task {d.taskId} · {d.specialistName||d.routingAgentName||'Specialist'}</span><span className="text-[10px] uppercase">{d.status}</span></div>
+                  <div className="text-[10px] text-muted-foreground mt-1">{d.platoonId||d.runtimeType||'runtime'} · attempt {d.attempt}{d.objectiveId ? ' · objective '+d.objectiveId : ''}</div>
+                  <div className="mt-2 grid gap-1 text-[10px] font-mono text-muted-foreground">
+                    <div>AgentOS: {d.id}</div>
+                    {d.nativeSessionId&&<div>Session: {d.nativeSessionId}</div>}
+                    {d.nativeRunId&&<div>Run: {d.nativeRunId}</div>}
+                  </div>
+                  {d.errorMessage&&<div className="mt-2 text-xs text-destructive">{d.errorMessage}</div>}
+                  {d.resultSummary&&<div className="mt-2 text-xs text-foreground/75 line-clamp-3">{d.resultSummary}</div>}
+                </div>)}
+                {delegations.length===0&&<div className="text-sm text-muted-foreground">No AgentOS delegations dispatched yet.</div>}
               </div>
             </div>
           </section>

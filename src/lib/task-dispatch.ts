@@ -1950,20 +1950,21 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
     )
 
     let delegationId: string | null = null
-    if (task.agent_source === 'agentos-external') {
-      const delegation = createDelegationForTask({
-        taskId: task.id,
-        projectId: task.project_id,
-        workspaceId: task.workspace_id,
-        routingAgentName: task.agent_name,
-        runtimeType: task.agent_runtime_type,
-        metadata: task.metadata,
-        attempt: (task.dispatch_attempts || 0) + 1,
-      })
-      delegationId = delegation.id
-    }
 
     try {
+      if (task.agent_source === 'agentos-external') {
+        const delegation = createDelegationForTask({
+          taskId: task.id,
+          projectId: task.project_id,
+          workspaceId: task.workspace_id,
+          routingAgentName: task.agent_name,
+          runtimeType: task.agent_runtime_type,
+          metadata: task.metadata,
+          attempt: (task.dispatch_attempts || 0) + 1,
+        })
+        delegationId = delegation.id
+      }
+
       // Check for previous Aegis rejection feedback
       const rejectionRow = db.prepare(`
         SELECT content FROM comments
