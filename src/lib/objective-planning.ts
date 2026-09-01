@@ -1,6 +1,9 @@
 import { getDatabase, db_helpers } from './db'
 import { inferMissionIntent } from './mission-intent'
 import { routeTaskWithinProject } from './project-task-routing'
+import { analyzeProjectForce } from './project-force-planning'
+import { bindExternalAgentToProject } from './external-project-bindings'
+import { getProjectCommand, updateProjectCommand } from './project-command'
 
 export interface ObjectiveMissionInput {
   key?: string
@@ -378,4 +381,166 @@ export function listProjectObjectives(projectId: number, workspaceId: number) {
     try { plan = JSON.parse(String(row.plan_json || '{}')) } catch {}
     return { ...row, plan, plan_json: undefined }
   })
+}
+export function executeObjective(input: {
+  objectiveId: number
+  projectId: number
+  workspaceId: number
+  actor?: string | null
+}) {
+  assertProject(input.projectId, input.workspaceId)
+  const db = getDatabase()
+  const objective = db.prepare(`
+    SELECT id, status, plan_json
+    FROM agentos_objectives
+    WHERE id = ? AND project_id = ? AND workspace_id = ?
+  `).get(input.objectiveId, input.projectId, input.workspaceId) as
+    | { id: number; status: string; plan_json: string }
+    | undefined
+  if (!objective) throw new Error('Objective not found')
+  if (objective.status === 'cancelled') throw new Error('Cancelled objective cannot execute')
+  if (objective.status === 'completed') {
+    return {
+      executed: false,
+      reason: 'Objective is already completed',
+      objectiveId: objective.id,
+      added: [],
+      routes: [],
+    }
+  }
+
+  let plan: { missions?: Array<{ taskId?: number; dependsOnTaskIds?: number[] }> } = {}
+  try { plan = JSON.parse(objective.plan_json || '{}') } catch {}
+
+  const commandBefore = getProjectCommand(input.projectId, input.workspaceId)
+  const allowed = new Set(commandBefore.policy.allowedPlatoons.map(value => value.toLowerCase()))
+  const before = analyzeProjectForce(input.projectId, input.workspaceId)
+  const added: Array<{ externalAgentId: string; agentName: string; platoonId: string }> = []
+  const assemblyErrors: Array<{ externalAgentId: string; agentName: string; error: string }> = []
+
+  for (const recommendation of before.recommendations) {
+    if (allowed.size > 0 && !allowed.has(recommendation.platoonId.toLowerCase())) continue
+    try {
+      const binding = bindExternalAgentToProject({
+        projectId: input.projectId,
+        workspaceId: input.workspaceId,
+        externalAgentId: recommendation.externalAgentId,
+        role: recommendation.capabilities.join(', ') || 'objective-force',
+        actor: input.actor || 'agentos',
+      })
+      added.push({
+        externalAgentId: binding.externalAgentId,
+        agentName: binding.agentName,
+        platoonId: binding.platoonId,
+      })
+    } catch (error) {
+      assemblyErrors.push({
+        externalAgentId: recommendation.externalAgentId,
+        agentName: recommendation.name,
+        error: error instanceof Error ? error.message : 'Failed to bind recommended agent',
+      })
+    }
+  }
+
+  const force = analyzeProjectForce(input.projectId, input.workspaceId)
+  const command = getProjectCommand(input.projectId, input.workspaceId)
+  if (command.state === 'paused' || command.state === 'blocked') {
+    return {
+      executed: false,
+      held: true,
+      reason: `Project command state is ${command.state}; AgentOS will not override it`,
+      objectiveId: objective.id,
+      added,
+      assemblyErrors,
+      force,
+      command,
+      routes: [],
+    }
+  }
+  if (force.readiness.status !== 'ready') {
+    return {
+      executed: false,
+      held: true,
+      reason: `Project force is not ready: ${force.readiness.status}`,
+      objectiveId: objective.id,
+      added,
+      assemblyErrors,
+      force,
+      command,
+      routes: [],
+    }
+  }
+
+  const activeCommand = command.state === 'active'
+    ? command
+    : updateProjectCommand({
+        projectId: input.projectId,
+        workspaceId: input.workspaceId,
+        state: 'active',
+        actor: input.actor || 'agentos',
+      })
+
+  promoteReadyObjectiveMissions()
+  const routes: Array<{ taskId: number; routed: boolean; reason?: string }> = []
+  for (const mission of plan.missions || []) {
+    if (!Number.isInteger(mission.taskId)) continue
+    const taskId = Number(mission.taskId)
+    const task = db.prepare(`
+      SELECT id, status, assigned_to
+      FROM tasks
+      WHERE id = ? AND project_id = ? AND workspace_id = ?
+    `).get(taskId, input.projectId, input.workspaceId) as
+      | { id: number; status: string; assigned_to: string | null }
+      | undefined
+    if (!task) continue
+    if (['done', 'failed', 'review', 'quality_review', 'in_progress'].includes(task.status)) continue
+    if (task.status === 'backlog') continue
+    try {
+      const result = routeTaskWithinProject({
+        taskId,
+        workspaceId: input.workspaceId,
+        actor: input.actor || 'agentos',
+        allowReassign: activeCommand.policy.allowReroute,
+      })
+      routes.push({ taskId, routed: result.routed, ...(result.reason ? { reason: result.reason } : {}) })
+    } catch (error) {
+      routes.push({
+        taskId,
+        routed: false,
+        reason: error instanceof Error ? error.message : 'Routing failed',
+      })
+    }
+  }
+
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(`
+    UPDATE agentos_objectives
+    SET status = 'active', updated_at = ?
+    WHERE id = ? AND project_id = ? AND workspace_id = ?
+  `).run(now, objective.id, input.projectId, input.workspaceId)
+
+  db_helpers.logActivity(
+    'agentos_objective_activated',
+    'project',
+    input.projectId,
+    input.actor || 'agentos',
+    `AgentOS activated objective ${objective.id}`,
+    {
+      objective_id: objective.id,
+      agents_added: added.length,
+      routes,
+      assembly_errors: assemblyErrors,
+    },
+    input.workspaceId,
+  )
+
+  return {
+    executed: true,
+    objectiveId: objective.id,
+    added,
+    assemblyErrors,
+    force,
+    command: activeCommand,
+    routes,
+  }
 }

@@ -3,6 +3,7 @@ import { requireRole } from '@/lib/auth'
 import { mutationLimiter } from '@/lib/rate-limit'
 import {
   createObjectivePlan,
+  executeObjective,
   listProjectObjectives,
   type ObjectiveMissionInput,
 } from '@/lib/objective-planning'
@@ -69,6 +70,40 @@ export async function POST(
     const message = error instanceof Error ? error.message : 'Failed to plan objective'
     const status = message === 'Project not found' ? 404 : 400
     return NextResponse.json({ error: message }, { status })
+  }
+}
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const auth = requireRole(request, 'operator')
+  if ('error' in auth) return NextResponse.json({ error: auth.error }, { status: auth.status })
+  const limited = mutationLimiter(request)
+  if (limited) return limited
+  const projectId = toProjectId((await params).id)
+  if (!projectId) return NextResponse.json({ error: 'Invalid project ID' }, { status: 400 })
+
+  let body: Record<string, unknown>
+  try { body = await request.json() } catch {
+    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+  }
+  const objectiveId = Number(body.objectiveId)
+  if (!Number.isInteger(objectiveId) || objectiveId <= 0 || body.action !== 'execute') {
+    return NextResponse.json({ error: 'objectiveId and action=execute are required' }, { status: 400 })
+  }
+
+  try {
+    const result = executeObjective({
+      objectiveId,
+      projectId,
+      workspaceId: auth.user.workspace_id ?? 1,
+      actor: auth.user.username,
+    })
+    return NextResponse.json(result)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to execute objective'
+    return NextResponse.json({ error: message }, { status: message.includes('not found') ? 404 : 400 })
   }
 }
 

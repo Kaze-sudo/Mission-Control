@@ -34,6 +34,7 @@ export function ProjectCommandPanel() {
   const [objectiveTitle,setObjectiveTitle]=useState('')
   const [objectiveDescription,setObjectiveDescription]=useState('')
   const [objectiveBusy,setObjectiveBusy]=useState(false)
+  const [objectiveExecutingId,setObjectiveExecutingId]=useState<number|null>(null)
   const [handoffFrom,setHandoffFrom]=useState('')
   const [handoffCaps,setHandoffCaps]=useState('')
   const [handoffInstructions,setHandoffInstructions]=useState('')
@@ -85,6 +86,17 @@ export function ProjectCommandPanel() {
     }catch(err){setError(err instanceof Error?err.message:'Failed to create objective')}
     finally{setObjectiveBusy(false)}
   },[loadContext,objectiveDescription,objectiveTitle,projectId])
+
+  const executeObjectiveAction=useCallback(async(objectiveId:number)=>{
+    if(!projectId)return
+    setObjectiveExecutingId(objectiveId);setError(null)
+    try{
+      const result=await apiFetch<{executed?:boolean;held?:boolean;reason?:string}>(`/api/projects/${projectId}/agentos-objectives`,{method:'PATCH',body:JSON.stringify({objectiveId,action:'execute'})})
+      if(result.held&&result.reason)setError(result.reason)
+      await loadContext(projectId)
+    }catch(err){setError(err instanceof Error?err.message:'Failed to execute objective')}
+    finally{setObjectiveExecutingId(null)}
+  },[loadContext,projectId])
 
   const createProjectHandoff=useCallback(async()=>{
     if(!projectId||!handoffFrom)return
@@ -188,7 +200,7 @@ export function ProjectCommandPanel() {
               </div>
               <div className="max-h-96 overflow-auto space-y-3">
                 {objectives.map(o=><div key={o.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
-                  <div className="flex items-start justify-between gap-3"><div><div className="text-sm font-medium">{o.title}</div><div className="text-[10px] text-muted-foreground mt-1">Objective #{o.id} · {o.plan?.source||'planned'}</div></div><span className="text-[10px] uppercase">{o.status}</span></div>
+                  <div className="flex items-start justify-between gap-3"><div><div className="text-sm font-medium">{o.title}</div><div className="text-[10px] text-muted-foreground mt-1">Objective #{o.id} · {o.plan?.source||'planned'}</div></div><div className="flex items-center gap-2"><span className="text-[10px] uppercase">{o.status}</span>{!['completed','cancelled'].includes(o.status)&&<Button size="sm" variant="outline" disabled={objectiveExecutingId===o.id} onClick={()=>void executeObjectiveAction(o.id)}>{objectiveExecutingId===o.id?'Executing…':o.status==='active'?'Re-route':'Assemble & Execute'}</Button>}</div></div>
                   {o.description&&<div className="text-xs text-foreground/75 mt-2">{o.description}</div>}
                   <div className="mt-3 space-y-2">
                     {(o.plan?.missions||[]).map(m=><div key={m.taskId} className="rounded border border-border/40 px-2.5 py-2">
