@@ -19,6 +19,7 @@ import { getMiniMaxApiKey, resolveMiniMaxEndpoint } from './minimax'
 import { getPlatoonCommander } from './platoon-commanders'
 import { runGamutAgent } from './gamut-host'
 import { checkAgentOSDispatchGuard } from './project-command'
+import { promoteReadyObjectiveMissions } from './objective-planning'
 import type Database from 'better-sqlite3'
 
 const AGENT_DISPATCH_ACCEPT_TIMEOUT_MS = 60_000
@@ -1847,6 +1848,11 @@ export async function requeueStaleTasks(): Promise<{ ok: boolean; message: strin
 
 export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: string }> {
   const db = getDatabase()
+
+  // Unlock dependency-gated objective missions before selecting assigned work.
+  // Newly ready missions route through the normal project/specialist selector,
+  // then still pass the AgentOS project-command guard below before execution.
+  promoteReadyObjectiveMissions()
 
   const tasks = db.prepare(`
     SELECT t.*, a.name as agent_name, a.id as agent_id, a.config as agent_config,

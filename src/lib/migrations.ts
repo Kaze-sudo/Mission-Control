@@ -1692,6 +1692,30 @@ const migrations: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_agentos_handoffs_tasks ON agentos_task_handoffs(from_task_id, to_task_id);
       `)
     }
+  },
+  {
+    id: '062_agentos_objectives',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agentos_objectives (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          status TEXT NOT NULL DEFAULT 'planned'
+            CHECK(status IN ('draft','planned','active','completed','failed','cancelled')),
+          plan_json TEXT NOT NULL DEFAULT '{}',
+          created_by TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_objectives_project
+          ON agentos_objectives(project_id, workspace_id, status, created_at DESC);
+      `)
+    }
   }
 ]
 
