@@ -18,6 +18,7 @@ import { classifyModelProvider, getDispatchModelId, getModelByAlias } from './mo
 import { getMiniMaxApiKey, resolveMiniMaxEndpoint } from './minimax'
 import { getPlatoonCommander } from './platoon-commanders'
 import { runGamutAgent } from './gamut-host'
+import { checkAgentOSDispatchGuard } from './project-command'
 import type Database from 'better-sqlite3'
 
 const AGENT_DISPATCH_ACCEPT_TIMEOUT_MS = 60_000
@@ -48,6 +49,7 @@ interface DispatchableTask {
   agent_name: string
   agent_id: number
   agent_config: string | null
+  agent_source?: string | null
   /** From agents.runtime_type — 'claude' opts into per-agent CLI session dispatch (#602). */
   agent_runtime_type?: string | null
   ticket_prefix: string | null
@@ -1848,7 +1850,7 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
 
   const tasks = db.prepare(`
     SELECT t.*, a.name as agent_name, a.id as agent_id, a.config as agent_config,
-           a.runtime_type as agent_runtime_type,
+           a.source as agent_source, a.runtime_type as agent_runtime_type,
            p.ticket_prefix, t.project_ticket_no
     FROM tasks t
     JOIN agents a ON a.name = t.assigned_to AND a.workspace_id = t.workspace_id
@@ -1878,6 +1880,25 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
   const now = Math.floor(Date.now() / 1000)
 
   for (const task of tasks) {
+    if (task.agent_source === 'agentos-external') {
+      const platoonId = String(task.agent_runtime_type || '').toLowerCase()
+      const guard = checkAgentOSDispatchGuard({
+        projectId: task.project_id,
+        workspaceId: task.workspace_id,
+        routingAgentName: task.agent_name,
+        platoonId,
+      })
+      if (!guard.allowed) {
+        logger.info({ taskId: task.id, platoonId, guard }, 'AgentOS dispatch held by project command guard')
+        db_helpers.logActivity(
+          'agentos_dispatch_held', 'task', task.id, 'agentos',
+          `AgentOS held dispatch: ${guard.reason || 'project command guard blocked dispatch'}`,
+          { platoon_id: platoonId, counts: guard.counts, limits: guard.limits, state: guard.state },
+          task.workspace_id,
+        )
+        continue
+      }
+    }
     // Atomically claim the task: only flip to in_progress if it is still
     // 'assigned'. If two dispatchers race (e.g. concurrent scheduler ticks or
     // multiple workers polling), exactly one UPDATE reports changes=1 and the
