@@ -83,10 +83,13 @@ interface ForcePlan {
     preferredPlatoons: string[]
     maxTeamSize: number | null
   }
+  taskDemand: { tasksAnalyzed: number; requiredCapabilities: string[]; preferredCapabilities: string[] }
+  effectiveRequirements: { requiredCapabilities: string[]; preferredCapabilities: string[] }
   coverage: Array<{ capability: string; covered: boolean; ready: boolean; agents: Array<{ id: string; name: string; platoonId: string; availability: string }> }>
   missingCapabilities: string[]
   blockedCapabilities: string[]
-  recommendations: Array<{ capability: string; externalAgentId: string; name: string; platoonId: string; score: number; availability: string; reasons: string[] }>
+  recommendations: Array<{ capability: string; capabilities: string[]; externalAgentId: string; name: string; platoonId: string; score: number; availability: string; reasons: string[] }>
+  unfilledCapabilities: string[]
   readiness: { required: number; ready: number; percent: number; status: string }
 }
 
@@ -102,6 +105,7 @@ export function PlatoonsPanel() {
   const [forcePreferred, setForcePreferred] = useState('')
   const [forcePlatoons, setForcePlatoons] = useState('')
   const [forceSaving, setForceSaving] = useState(false)
+  const [forceAssembling, setForceAssembling] = useState(false)
   const [bindingBusy, setBindingBusy] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -174,6 +178,30 @@ export function PlatoonsPanel() {
     }
   }, [forcePlan?.profile.maxTeamSize, forcePlatoons, forcePreferred, forceRequired, selectedProjectId])
 
+
+  const assembleRecommendedTeam = useCallback(async () => {
+    if (!selectedProjectId || !forcePlan?.recommendations.length) return
+    setForceAssembling(true)
+    setError(null)
+    try {
+      const result = await apiFetch<ForcePlan & {
+        added?: Array<{ agentName: string; platoonId: string }>
+        errors?: Array<{ agentName: string; error: string }>
+      }>(`/api/projects/${selectedProjectId}/agentos-force-plan`, {
+        method: 'POST',
+        body: JSON.stringify({ action: 'assemble-recommended' }),
+      })
+      setForcePlan(result)
+      if (result.errors?.length) {
+        setError(`Some recommended agents could not be added: ${result.errors.map(item => `${item.agentName}: ${item.error}`).join(' | ')}`)
+      }
+      await refreshProjectContext(selectedProjectId)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to assemble recommended AgentOS team.')
+    } finally {
+      setForceAssembling(false)
+    }
+  }, [forcePlan?.recommendations.length, refreshProjectContext, selectedProjectId])
   const toggleBinding = useCallback(async (agent: RosterAgent) => {
     if (!selectedProjectId) return
     const existing = bindings.find(binding => binding.externalAgentId === agent.id)
@@ -280,7 +308,7 @@ export function PlatoonsPanel() {
               <div>
                 <p className="text-xs font-mono uppercase tracking-[0.18em] text-primary">Company Commander Force Plan</p>
                 <h3 className="text-lg font-semibold mt-1">Project capability coverage</h3>
-                <p className="text-xs text-muted-foreground mt-1">Define what this project needs. AgentOS measures the bound team and recommends available agents to close gaps.</p>
+                <p className="text-xs text-muted-foreground mt-1">AgentOS combines your manual force plan with capability demand inferred from the project’s open tasks, then recommends the best cross-platoon specialists to close gaps.</p>
               </div>
               {forcePlan && (
                 <div className="min-w-32 rounded-lg bg-secondary/50 px-3 py-2 text-center">
@@ -290,12 +318,35 @@ export function PlatoonsPanel() {
               )}
             </div>
 
+            {forcePlan && forcePlan.taskDemand.tasksAnalyzed > 0 && (
+              <div className="rounded-lg border border-border/50 bg-background/40 p-3">
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Task-derived demand · {forcePlan.taskDemand.tasksAnalyzed} open tasks analyzed</div>
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {forcePlan.taskDemand.requiredCapabilities.map(capability => (
+                    <span key={`required-${capability}`} className="text-[11px] rounded bg-primary/10 text-primary px-2 py-1">{capability}</span>
+                  ))}
+                  {forcePlan.taskDemand.preferredCapabilities.map(capability => (
+                    <span key={`preferred-${capability}`} className="text-[11px] rounded bg-secondary text-muted-foreground px-2 py-1">{capability} · preferred</span>
+                  ))}
+                  {forcePlan.taskDemand.requiredCapabilities.length === 0 && forcePlan.taskDemand.preferredCapabilities.length === 0 && (
+                    <span className="text-xs text-muted-foreground">No specialist capability demand inferred yet.</span>
+                  )}
+                </div>
+              </div>
+            )}
             <div className="grid gap-2 md:grid-cols-3">
               <input value={forceRequired} onChange={e => setForceRequired(e.target.value)} className="rounded-md border border-border bg-background px-3 py-2 text-sm" placeholder="Required: backend, security, testing-review" />
               <input value={forcePreferred} onChange={e => setForcePreferred(e.target.value)} className="rounded-md border border-border bg-background px-3 py-2 text-sm" placeholder="Preferred capabilities" />
-              <input value={forcePlatoons} onChange={e => setForcePlatoons(e.target.value)} className="rounded-md border border-border bg-background px-3 py-2 text-sm" placeholder="Preferred platoons: codex, hermes" />
+              <input value={forcePlatoons} onChange={e => setForcePlatoons(e.target.value)} className="rounded-md border border-border bg-background px-3 py-2 text-sm" placeholder="Preferred platoons: codex, hermes, openclaw, gamut" />
             </div>
-            <Button size="sm" onClick={() => void saveForcePlan()} disabled={forceSaving}>{forceSaving ? 'Saving…' : 'Save Force Plan'}</Button>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" onClick={() => void saveForcePlan()} disabled={forceSaving}>{forceSaving ? 'Saving…' : 'Save Force Plan'}</Button>
+              {forcePlan && forcePlan.recommendations.length > 0 && (
+                <Button size="sm" variant="outline" onClick={() => void assembleRecommendedTeam()} disabled={forceAssembling}>
+                  {forceAssembling ? 'Assembling…' : `Add Recommended Team (${forcePlan.recommendations.length})`}
+                </Button>
+              )}
+            </div>
 
             {forcePlan && forcePlan.coverage.length > 0 && (
               <div>
@@ -310,6 +361,12 @@ export function PlatoonsPanel() {
               </div>
             )}
 
+            {forcePlan && forcePlan.unfilledCapabilities.length > 0 && (
+              <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+                Required capabilities still unfilled: {forcePlan.unfilledCapabilities.join(', ')}. Increase max team size, restore an unavailable platoon, or bind a suitable agent manually.
+              </div>
+            )}
+
             {forcePlan && forcePlan.recommendations.length > 0 && (
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">Recommended reinforcements</div>
@@ -317,9 +374,9 @@ export function PlatoonsPanel() {
                   {forcePlan.recommendations.map(rec => {
                     const candidate = agents.find(agent => agent.id === rec.externalAgentId)
                     return (
-                      <div key={`${rec.capability}-${rec.externalAgentId}`} className="rounded-lg border border-border/60 bg-background/50 p-3">
+                      <div key={rec.externalAgentId} className="rounded-lg border border-border/60 bg-background/50 p-3">
                         <div className="flex items-start justify-between gap-2">
-                          <div><div className="text-sm font-medium">{rec.name}</div><div className="text-[10px] text-muted-foreground">{rec.platoonId} · covers {rec.capability}</div></div>
+                          <div><div className="text-sm font-medium">{rec.name}</div><div className="text-[10px] text-muted-foreground">{rec.platoonId} · covers {rec.capabilities.join(', ')}</div></div>
                           <span className="text-xs font-mono text-primary">{rec.score}</span>
                         </div>
                         <Button className="mt-2 w-full" size="sm" variant="outline" disabled={!candidate || bindingBusy === rec.externalAgentId} onClick={() => candidate && void toggleBinding(candidate)}>
