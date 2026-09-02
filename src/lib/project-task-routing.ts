@@ -4,6 +4,7 @@ import { getGlobalAgentRoster } from './global-agent-roster'
 import { rankAgentsForMission, type MissionRequirements } from './agent-selection'
 import { getProjectCommand } from './project-command'
 import { inferMissionIntent } from './mission-intent'
+import { recommendAiResources, toTaskResourceAttachment } from './ai-resource-registry'
 
 interface TaskRouteRow {
   id: number
@@ -194,6 +195,10 @@ export function routeTaskWithinProject(input: {
     return { routed: false, reason, taskId: task.id, projectId: task.project_id }
   }
   const now = Math.floor(Date.now() / 1000)
+  const resourceRecommendations = recommendAiResources([
+    ...requirements.requiredCapabilities,
+    ...(requirements.preferredCapabilities || []),
+  ], 6)
   const nextMetadata = {
     ...metadata,
     agentos_routing: {
@@ -212,6 +217,7 @@ export function routeTaskWithinProject(input: {
       },
       routedAt: now,
     },
+    agentos_resources: resourceRecommendations.map(resource => toTaskResourceAttachment(resource)),
   }
 
   db.prepare("UPDATE tasks SET assigned_to = ?, status = CASE WHEN status IN ('backlog', 'inbox') THEN 'assigned' ELSE status END, metadata = ?, updated_at = ? WHERE id = ? AND workspace_id = ?")

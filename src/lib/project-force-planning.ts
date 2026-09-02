@@ -1,6 +1,7 @@
 import { getDatabase } from './db'
 import { listExternalProjectBindings } from './external-project-bindings'
 import { getGlobalAgentRoster, type GlobalRosterAgent } from './global-agent-roster'
+import { recommendAiResources } from './ai-resource-registry'
 import { rankAgentsForMission } from './agent-selection'
 import { inferMissionIntent } from './mission-intent'
 
@@ -282,6 +283,7 @@ export function analyzeProjectForce(projectId: number, workspaceId: number) {
   const unfilledCapabilities = outstanding.filter(capability => !recommendedCoverage.has(capability))
 
   const readyCoverage = coverage.filter(item => item.ready).length
+  const resourceRecommendations = recommendAiResources([...effectiveRequired, ...effectivePreferred], 12)
   return {
     profile,
     taskDemand,
@@ -295,6 +297,7 @@ export function analyzeProjectForce(projectId: number, workspaceId: number) {
     missingCapabilities: missing,
     blockedCapabilities: blocked,
     recommendations,
+    resourceRecommendations,
     unfilledCapabilities,
     readiness: {
       required: effectiveRequired.length,

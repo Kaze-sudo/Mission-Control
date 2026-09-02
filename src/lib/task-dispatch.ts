@@ -296,6 +296,36 @@ export function resolveCliSandboxOptions(
   }
 }
 
+/**
+ * Phase 4 — render the AgentOS Preferred Resources block for a specialist prompt.
+ * Rules: resources are preferred (not mandatory); inaccessible paths must not be
+ * claimed as used; access limitations must be reported; manual-only/reference
+ * resources are never used automatically.
+ */
+export function buildAgentosResourcesPromptSection(resources: unknown[]): string {
+  const valid: Array<Record<string, unknown>> = []
+  for (const resource of Array.isArray(resources) ? resources : []) {
+    if (!resource || typeof resource !== 'object') continue
+    valid.push(resource as Record<string, unknown>)
+  }
+  if (valid.length === 0) return ''
+  const lines = [
+    '## AgentOS Preferred Resources',
+    'These are the best approved shared resources AgentOS ranked for this mission.',
+    '- Use them when relevant and accessible.',
+    '- Do NOT claim to have used a resource your runtime cannot access — continue safely and report the access limitation.',
+    '- Do NOT automatically use manual-only or reference resources unless an operator explicitly selected them.',
+  ]
+  for (const resource of valid.slice(0, 6)) {
+    const name = typeof resource.name === 'string' ? resource.name : 'resource'
+    const resourcePath = typeof resource.path === 'string' ? resource.path : ''
+    const score = typeof resource.score === 'number' ? resource.score : null
+    const caps = Array.isArray(resource.capabilities) ? resource.capabilities.filter((value: unknown) => typeof value === 'string') : []
+    lines.push('- ' + name + (score !== null ? ' (' + score + '/100)' : '') + (caps.length ? ' — ' + caps.join(', ') : '') + (resourcePath ? ' — ' + resourcePath : ''))
+  }
+  return lines.join('\n')
+}
+
 function buildTaskPrompt(task: DispatchableTask, rejectionFeedback?: string | null): string {
   const ticket = task.ticket_prefix && task.project_ticket_no
     ? `${task.ticket_prefix}-${String(task.project_ticket_no).padStart(3, '0')}`
@@ -314,6 +344,14 @@ function buildTaskPrompt(task: DispatchableTask, rejectionFeedback?: string | nu
 
   if (task.description) {
     lines.push('', task.description)
+  }
+
+  const metadata = safeParseMetadata(task.metadata)
+  const resourceSection = buildAgentosResourcesPromptSection(
+    Array.isArray(metadata.agentos_resources) ? metadata.agentos_resources : []
+  )
+  if (resourceSection) {
+    lines.push('', resourceSection)
   }
 
   if (rejectionFeedback) {

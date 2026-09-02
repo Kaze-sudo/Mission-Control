@@ -14,10 +14,26 @@ interface CommandRecord {
 interface Binding { id:number; externalAgentId:string; agentName:string; platoonId:string; role:string; availability:string }
 interface Task { id:number; title:string; status:string; priority:string; assigned_to:string|null; metadata?:Record<string,unknown>; ticket_ref?:string }
 interface Handoff { id:number; fromTaskId:number; toTaskId:number|null; toExternalAgentId:string|null; toPlatoonId:string|null; requestedCapabilities:string[]; instructions:string|null; status:string; createdAt:number }
-interface ForcePlan { readiness:{required:number;ready:number;percent:number;status:string}; missingCapabilities:string[]; blockedCapabilities:string[]; coverage:Array<{capability:string;covered:boolean;ready:boolean}> }
+interface ForcePlan { readiness:{required:number;ready:number;percent:number;status:string}; missingCapabilities:string[]; blockedCapabilities:string[]; coverage:Array<{capability:string;covered:boolean;ready:boolean}>; resourceRecommendations?:Array<{id:string;name:string;path:string;type:string;score:number;primaryCapability:string;capabilities:string[]}> }
 interface ObjectiveMission { key:string; title:string; taskId:number; dependsOnTaskIds:number[]; requiredCapabilities:string[]; preferredCapabilities:string[] }
 interface Objective { id:number; title:string; description:string; status:string; created_at:number; plan?:{ source?:string; missions?:ObjectiveMission[] } }
 interface Delegation { id:string; taskId:number; objectiveId:number|null; platoonId:string|null; specialistName:string|null; routingAgentName:string|null; runtimeType:string|null; status:string; nativeSessionId:string|null; nativeRunId:string|null; attempt:number; resultSummary:string|null; errorMessage:string|null; createdAt:number; updatedAt:number; completedAt:number|null }
+interface ArsenalResource { id:string; name:string; path:string; type:string; score:number; primaryCapability:string; capabilities:string[]; auditStatus?:string; status?:string; manualOnly?:boolean; autoSelectAllowed?:boolean; preferredPlatoon?:string|null; preferredSpecialistRole?:string|null; moveRisk?:string|null; pathSensitive?:boolean; supersededBy?:string[]; usage?:string|null }
+interface ArsenalCoverageEntry { resourceId:string; name:string; score:number|null; status:string; autoSelectAllowed:boolean; manualOnly:boolean; usage:string|null; note:string|null; preferredPlatoon:string|null; preferredSpecialistRole:string|null }
+interface ArsenalCoverage { capability:string; status:'FILLED'|'PARTIALLY_COVERED'|'OPEN'; preferred:ArsenalCoverageEntry[]; secondary:ArsenalCoverageEntry[]; reference:ArsenalCoverageEntry[]; notProviders:string[]; note:string|null }
+interface ArsenalChangeState { scanId:string; scanTime:string; baselineVersion:string; unchanged:string[]; changed:string[]; new:string[]; missing:string[]; duplicateCandidates:string[]; supersessionCandidates:string[]; promoted:string[]; gapNote:string }
+interface ArsenalReviewItem { reviewId:string; detectedState:string; path:string; probableName:string; probableSourceRepo:string|null; probableResourceType:string|null; detectedCapabilities:string[]; inferredPrimaryCapability:string|null; coversCapabilityGaps:string[]; likelyOverlaps:string[]; runtimePathRisks:string[]; preliminaryQualityScore:number|null; preliminaryAgentosRelevance:string|null; suggestedPlatoon:string|null; suggestedSpecialistRole:string|null; recommendedAction:string|null; reviewStatus:string; pending:boolean; promotionBatchId:string|null; finalApprovedDecision:string|null; deepReview?:{requiredCapability:string;status:string;reviewer:string|null} }
+interface ArsenalPromotion { promotionBatchId:string; approvedAt:string; approvedResources:string[]; previousState:Record<string,unknown>|null; newState:Record<string,unknown>|null; capabilitiesAdded:string[]; overlapChanges:string[]; warnings:string[]; reviewerDecision:string|null }
+interface ArsenalState {
+  registry: { resources: ArsenalResource[]; overlapGroups: Array<{capability:string;preferredId:string;candidateIds:string[]}>; summary:{ total:number; keep:number } } | null
+  capabilityCoverage: ArsenalCoverage[]
+  changes: ArsenalChangeState | null
+  reviewQueue: ArsenalReviewItem[]
+  promotionHistory: ArsenalPromotion[]
+  knowledgePackBacklog: Array<{ id:string; name:string; status:string }>
+  summary?: { resources:number; capabilities:number; filled:number; partiallyCovered:number; open:number; pendingReviews:number }
+}
+type ArsenalTab = 'recommendations'|'registry'|'coverage'|'changes'|'reviews'|'history'|'overlaps'|'risks'|'backlog'
 
 const STATES: CommandRecord['state'][] = ['draft','ready','active','paused','blocked']
 
@@ -35,6 +51,13 @@ export function ProjectCommandPanel() {
   const [objectiveDescription,setObjectiveDescription]=useState('')
   const [objectiveBusy,setObjectiveBusy]=useState(false)
   const [objectiveExecutingId,setObjectiveExecutingId]=useState<number|null>(null)
+  const [resourceBusy,setResourceBusy]=useState(false)
+  const [arsenal,setArsenal]=useState<ArsenalState|null>(null)
+  const [arsenalTab,setArsenalTab]=useState<ArsenalTab>('recommendations')
+  const [actionBusy,setActionBusy]=useState(false)
+  const [actionError,setActionError]=useState<string|null>(null)
+  const [actionMessage,setActionMessage]=useState<string|null>(null)
+  const [pendingAction,setPendingAction]=useState<{resourceId:string;action:string}|null>(null)
   const [handoffFrom,setHandoffFrom]=useState('')
   const [handoffCaps,setHandoffCaps]=useState('')
   const [handoffInstructions,setHandoffInstructions]=useState('')
@@ -76,6 +99,34 @@ export function ProjectCommandPanel() {
     }catch(err){setError(err instanceof Error?err.message:'Failed to update project command state')}
     finally{setSaving(false)}
   },[loadContext,projectId])
+
+  const loadArsenal=useCallback(async()=>{
+    try{
+      const data=await apiFetch<ArsenalState>('/api/agentos/resources')
+      setArsenal({registry:data.registry,capabilityCoverage:data.capabilityCoverage||[],changes:data.changes||null,reviewQueue:data.reviewQueue||[],promotionHistory:data.promotionHistory||[],knowledgePackBacklog:data.knowledgePackBacklog||[],summary:data.summary})
+    }catch{/* Arsenal companion view is non-fatal */}
+  },[])
+  useEffect(()=>{void loadArsenal()},[loadArsenal])
+
+  const rescanAiVault=useCallback(async()=>{
+    if(!projectId)return
+    setResourceBusy(true);setError(null)
+    try{
+      await apiFetch('/api/agentos/resources',{method:'POST'})
+      await loadContext(projectId);await loadArsenal()
+    }catch(err){setError(err instanceof Error?err.message:'Failed to rescan AI vault')}
+    finally{setResourceBusy(false)}
+  },[loadArsenal,loadContext,projectId])
+
+  const submitArsenalAction=useCallback(async(payload:{action:string;resourceId:string;reason?:string;reviewer?:string;promotion?:Record<string,unknown>})=>{
+    setActionBusy(true);setActionError(null);setActionMessage(null)
+    try{
+      const response=await apiFetch<{ok?:boolean;result?:{message?:string};error?:string}>(`/api/agentos/resources/actions`,{method:'POST',body:JSON.stringify(payload)})
+      if(response.ok){setActionMessage(response.result?.message||'Arsenal action applied');setPendingAction(null);await loadArsenal()}
+      else setActionError(response.error||'Arsenal action failed')
+    }catch(err){setActionError(err instanceof Error?err.message:'Arsenal action failed')}
+    finally{setActionBusy(false)}
+  },[loadArsenal])
 
   const createObjective=useCallback(async()=>{
     if(!projectId||!objectiveTitle.trim())return
@@ -187,6 +238,30 @@ export function ProjectCommandPanel() {
             </div>
           </section>
 
+          <section className="rounded-xl border border-border bg-card p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div><p className="text-xs font-mono uppercase tracking-wider text-primary">AI Arsenal</p><h2 className="text-lg font-semibold mt-1">Approved skills, tools & knowledge</h2></div>
+              <div className="flex items-center gap-3">
+                {arsenal?.summary&&<span className="text-[10px] text-muted-foreground">{arsenal.summary.resources} resources · {arsenal.summary.filled} filled · {arsenal.summary.partiallyCovered} partial · {arsenal.summary.open} open</span>}
+                <Button size="sm" variant="outline" disabled={resourceBusy} onClick={()=>void rescanAiVault()}>{resourceBusy?'Scanning…':'Rescan D:\AI'}</Button>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {([['recommendations','Recommendations'],['registry','Registry'],['coverage','Capability Coverage'],['changes','New / Changed'],['reviews','Review Queue'],['history','Promotion History'],['overlaps','Duplicates / Supersessions'],['risks','Runtime Risks'],['backlog','Backlog']] as Array<[ArsenalTab,string]>).map(([tab,label])=><button key={tab} onClick={()=>{setArsenalTab(tab);setActionError(null);setActionMessage(null)}} className={`rounded-md px-2.5 py-1 text-xs font-medium ${arsenalTab===tab?'bg-primary text-primary-foreground':'bg-secondary/50 text-muted-foreground hover:bg-secondary'}`}>{label}</button>)}
+            </div>
+            {actionError&&<div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{actionError}</div>}
+            {actionMessage&&<div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-400">{actionMessage}</div>}
+            {arsenalTab==='recommendations'&&<ArsenalRecommendations recommendations={force?.resourceRecommendations||[]}/>}
+            {arsenalTab==='registry'&&<ArsenalRegistry registry={arsenal?.registry||null}/>}
+            {arsenalTab==='coverage'&&<ArsenalCoverage coverage={arsenal?.capabilityCoverage||[]}/>}
+            {arsenalTab==='changes'&&<ArsenalChanges changes={arsenal?.changes||null}/>}
+            {arsenalTab==='reviews'&&<ArsenalReviews items={arsenal?.reviewQueue||[]} pendingAction={pendingAction} setPendingAction={setPendingAction} busy={actionBusy} onSubmit={submitArsenalAction}/>}
+            {arsenalTab==='history'&&<ArsenalHistory history={arsenal?.promotionHistory||[]}/>}
+            {arsenalTab==='overlaps'&&<ArsenalOverlaps registry={arsenal?.registry||null}/>}
+            {arsenalTab==='risks'&&<ArsenalRisks registry={arsenal?.registry||null} reviews={arsenal?.reviewQueue||[]}/>}
+            {arsenalTab==='backlog'&&<ArsenalBacklog backlog={arsenal?.knowledgePackBacklog||[]}/>}
+          </section>
+
           <section className="grid gap-4 xl:grid-cols-2">
             <div className="rounded-xl border border-border bg-card p-4 space-y-4">
               <div className="flex items-center justify-between">
@@ -256,3 +331,148 @@ export function ProjectCommandPanel() {
 
 function MetricCard({label,value,note}:{label:string;value:string;note:string}){return <div className="rounded-xl border border-border bg-card p-4"><div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div><div className="text-2xl font-semibold mt-1">{value}</div><div className="text-xs text-muted-foreground mt-1">{note}</div></div>}
 function MiniMetric({label,value}:{label:string;value:number}){return <div className="rounded-lg bg-secondary/40 p-3"><div className="text-xl font-semibold">{value}</div><div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div></div>}
+function ArsenalStatusBadge({status}:{status:string}){const tone=status==='FILLED'?'bg-emerald-500/15 text-emerald-400':status==='PARTIALLY_COVERED'?'bg-amber-500/15 text-amber-400':status==='OPEN'?'bg-rose-500/15 text-rose-400':'bg-secondary/50 text-muted-foreground';return <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-mono uppercase ${tone}`}>{status}</span>}
+function ArsenalRecommendations({recommendations}:{recommendations:Array<{id:string;name:string;path:string;type:string;score:number;primaryCapability:string;capabilities:string[]}>}){return <div>
+  <p className="text-xs text-muted-foreground mb-3">AgentOS ranks D:\AI resources against this project's capability demand and attaches the best matches to routed missions. Manual-only and reference resources are never auto-selected.</p>
+  <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+    {recommendations.slice(0,12).map(resource=><div key={resource.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
+      <div className="flex items-start justify-between gap-2"><div><div className="text-sm font-medium">{resource.name}</div><div className="text-[10px] text-muted-foreground mt-1">{resource.type} · {resource.primaryCapability}</div></div><span className="text-xs font-mono">{resource.score}</span></div>
+      <div className="text-[10px] text-muted-foreground mt-2 break-all">{resource.path}</div>
+    </div>)}
+    {recommendations.length===0&&<div className="text-sm text-muted-foreground">No matching vault resources for the current project demand yet.</div>}
+  </div>
+</div>}
+function ArsenalRegistry({registry}:{registry:ArsenalState['registry']}){
+  if(!registry)return <div className="text-sm text-muted-foreground">AI Arsenal registry unavailable.</div>
+  const resources=[...registry.resources].sort((a,b)=>(b.score||0)-(a.score||0))
+  return <div>
+    <p className="text-xs text-muted-foreground mb-2">{registry.summary.total} canonical audited resources from agentos_resource_registry.json. Deep-audit policy beats heuristic scanner scores; REJECT / archive / manual-only resources are never auto-selected.</p>
+    <div className="max-h-96 overflow-auto rounded-lg border border-border/50">
+      {resources.map(resource=><div key={resource.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/40 px-3 py-2 last:border-b-0">
+        <div className="w-2/5 min-w-44"><div className="text-sm font-medium">{resource.name}</div><div className="text-[10px] text-muted-foreground break-all">{resource.path}</div></div>
+        <span className="text-[10px] uppercase rounded bg-secondary/50 px-1.5 py-0.5">{resource.type}</span>
+        <span className="text-xs font-mono w-10">{resource.score}</span>
+        <ArsenalStatusBadge status={resource.auditStatus||resource.status||''}/>
+        <span className="text-xs text-muted-foreground min-w-36">{resource.primaryCapability}</span>
+        <span className="text-[10px] text-muted-foreground min-w-28">{resource.preferredPlatoon||''}{resource.preferredSpecialistRole?` · ${resource.preferredSpecialistRole}`:''}</span>
+        <span className="text-[10px] font-mono text-muted-foreground">{resource.autoSelectAllowed?'auto-select':'manual-only'}</span>
+      </div>)}
+    </div>
+  </div>
+}
+function ArsenalCoverage({coverage}:{coverage:ArsenalCoverage[]}){
+  if(coverage.length===0)return <div className="text-sm text-muted-foreground">No capability coverage available (agentos_capability_index.json missing?).</div>
+  const order:{[key:string]:number}={PARTIALLY_COVERED:0,OPEN:1,FILLED:2}
+  const sorted=[...coverage].sort((a,b)=>(order[a.status]??3)-(order[b.status]??3)||a.capability.localeCompare(b.capability))
+  return <div className="space-y-2">
+    {sorted.map(item=><div key={item.capability} className="rounded-lg border border-border/50 bg-background/40 p-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1"><span className="text-sm font-medium">{item.capability}</span><ArsenalStatusBadge status={item.status}/>
+        {item.preferred.map(entry=><span key={entry.resourceId} className="text-xs text-emerald-400">Preferred: {entry.name}</span>)}
+        {item.secondary.map(entry=><span key={entry.resourceId} className="text-xs text-muted-foreground">• {entry.name}</span>)}
+        {item.reference.map(entry=><span key={entry.resourceId} className="text-xs text-sky-400">Reference: {entry.name}{entry.manualOnly?' (manual-only)':''}</span>)}
+        {item.notProviders.map(name=><span key={name} className="text-[10px] text-rose-400/80 line-through">Not provider: {name}</span>)}</div>
+      {item.note&&<div className="text-[11px] text-muted-foreground mt-1.5">{item.note}</div>}
+    </div>)}
+  </div>
+}
+function ArsenalChanges({changes}:{changes:ArsenalChangeState|null}){
+  if(!changes)return <div className="text-sm text-muted-foreground">No change-detection snapshot (agentos_resource_changes.json) available.</div>
+  const tiles:Array<[string,string[],string]>=[['NEW',changes.new,'text-emerald-400'],['CHANGED',changes.changed,'text-amber-400'],['MISSING',changes.missing,'text-rose-400'],['UNCHANGED',changes.unchanged,'text-muted-foreground']]
+  return <div>
+    <p className="text-xs text-muted-foreground mb-2">Snapshot {changes.scanId} · {changes.scanTime} (baseline {changes.baselineVersion}). AgentOS never promotes automatically — candidates flow through the review queue.</p>
+    <div className="grid gap-2 md:grid-cols-2">
+      {tiles.map(([label,ids,color])=><div key={label} className="rounded-lg border border-border/50 p-3"><div className={`text-xs font-mono uppercase ${color}`}>{label} · {ids.length}</div><div className="text-[11px] text-muted-foreground mt-1 break-words">{label==='UNCHANGED'?(ids.length?`${ids.length} resources stable`:'—'):ids.join(', ')||'—'}</div></div>)}
+      {changes.duplicateCandidates.length>0&&<div className="rounded-lg border border-border/50 p-3"><div className="text-xs font-mono uppercase text-muted-foreground">Duplicate candidates · {changes.duplicateCandidates.length}</div><div className="text-[11px] text-muted-foreground mt-1">{changes.duplicateCandidates.join(', ')}</div></div>}
+      {changes.supersessionCandidates.length>0&&<div className="rounded-lg border border-border/50 p-3"><div className="text-xs font-mono uppercase text-muted-foreground">Supersession candidates · {changes.supersessionCandidates.length}</div><div className="text-[11px] text-muted-foreground mt-1">{changes.supersessionCandidates.join(', ')}</div></div>}
+      {changes.promoted.length>0&&<div className="rounded-lg border border-border/50 p-3"><div className="text-xs font-mono uppercase text-emerald-400">Promoted · {changes.promoted.length}</div><div className="text-[11px] text-muted-foreground mt-1">{changes.promoted.join(', ')}</div></div>}
+    </div>
+    {changes.gapNote&&<p className="text-[11px] text-muted-foreground mt-2">{changes.gapNote}</p>}
+  </div>
+}
+function ArsenalReviews({items,pendingAction,setPendingAction,busy,onSubmit}:{items:ArsenalReviewItem[];pendingAction:{resourceId:string;action:string}|null;setPendingAction:(value:{resourceId:string;action:string}|null)=>void;busy:boolean;onSubmit:(payload:{action:string;resourceId:string;reason?:string;reviewer?:string;promotion?:Record<string,unknown>})=>Promise<void>}){
+  const pending=items.filter(item=>item.pending)
+  const decided=items.filter(item=>!item.pending)
+  return <div className="space-y-2">
+    <p className="text-xs text-muted-foreground">Candidates detected by the AI vault scan pipeline ({items.length} total, {pending.length} pending). Approvals run through the validated atomic promotion action — nothing here moves files.</p>
+    {pending.length===0&&<div className="text-sm text-muted-foreground">No pending review candidates.</div>}
+    {pending.map(item=><div key={item.reviewId} className="rounded-lg border border-border/50 bg-background/40 p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div><div className="text-sm font-medium">{item.probableName}</div><div className="text-[10px] text-muted-foreground break-all">{item.path}</div></div>
+        <div className="flex flex-wrap gap-1.5">{[['approve','Approve'],['reject','Reject'],['mark-manual-only','Manual-only'],['dismiss-duplicate','Dismiss dup'],['request-deep-review','Deep review']].map(([action,label])=><Button key={action} size="sm" variant="outline" disabled={busy||pendingAction!==null&&pendingAction.resourceId===item.reviewId&&pendingAction.action===action} onClick={()=>setPendingAction({resourceId:item.reviewId,action})}>{label}</Button>)}</div>
+      </div>
+      <div className="text-[11px] text-muted-foreground mt-1.5 break-words">{(item.detectedCapabilities||[]).join(', ')||'no capabilities inferred'} · score {item.preliminaryQualityScore??'—'} · {item.recommendedAction||'no action'}{item.likelyOverlaps.length?` · overlaps: ${item.likelyOverlaps.join(', ')}`:''}{item.runtimePathRisks.length?` · risks: ${item.runtimePathRisks.join(', ')}`:''}</div>
+      {pendingAction&&pendingAction.resourceId===item.reviewId&&<ArsenalActionForm item={item} action={pendingAction.action} busy={busy} onCancel={()=>setPendingAction(null)} onSubmit={onSubmit}/>}
+    </div>)}
+    {decided.length>0&&<div className="pt-2"><p className="text-[10px] font-mono uppercase text-muted-foreground mb-1.5">Decided</p>{decided.map(item=><div key={item.reviewId} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-border/40 px-3 py-1.5 text-[11px]"><span className="font-medium">{item.probableName}</span><ArsenalStatusBadge status={item.reviewStatus}/>{item.promotionBatchId&&<span className="text-muted-foreground">{item.promotionBatchId}</span>}{item.finalApprovedDecision&&<span className="text-muted-foreground">{item.finalApprovedDecision}</span>}</div>)}</div>}
+  </div>
+}
+function ArsenalActionForm({item,action,busy,onCancel,onSubmit}:{item:ArsenalReviewItem;action:string;busy:boolean;onCancel:()=>void;onSubmit:(p:{action:string;resourceId:string;reason?:string;reviewer?:string;promotion?:Record<string,unknown>})=>Promise<void>}){
+  const [reason,setReason]=useState('')
+  const [reviewer,setReviewer]=useState('')
+  const [localError,setLocalError]=useState<string|null>(null)
+  const [proposal,setProposal]=useState<string>(()=>JSON.stringify({
+    name:item.probableName,
+    display_name:item.probableName,
+    source_repo:item.probableSourceRepo,
+    resource_type:item.probableResourceType,
+    primary_capability:item.inferredPrimaryCapability,
+    secondary_capabilities:(item.detectedCapabilities||[]).filter(cap=>cap!==item.inferredPrimaryCapability),
+    quality_score:item.preliminaryQualityScore,
+    audit_status:'KEEP',
+    auto_select_allowed:true,
+    manual_only:false,
+    notes:item.recommendedAction?`Deep-review proposal: ${item.recommendedAction}`:undefined,
+  },null,2))
+  const submit=async()=>{
+    setLocalError(null)
+    let promotion:Record<string,unknown>|undefined
+    if(action==='approve'){
+      try{promotion=JSON.parse(proposal)}catch{setLocalError('Promotion payload is not valid JSON');return}
+    }
+    await onSubmit({action,resourceId:item.reviewId,reason:reason.trim()||undefined,reviewer:reviewer.trim()||undefined,promotion})
+  }
+  return <div className="mt-2 rounded border border-border/50 bg-background/60 p-2.5 space-y-2">
+    {localError&&<div className="text-xs text-destructive">{localError}</div>}
+    {action==='approve'&&<textarea value={proposal} onChange={e=>setProposal(e.target.value)} className="min-h-36 w-full rounded border border-border bg-background px-2 py-1.5 font-mono text-[10px]" spellCheck={false}/>}
+    {action==='request-deep-review'&&<input value={reviewer} onChange={e=>setReviewer(e.target.value)} className="w-full rounded border border-border bg-background px-2 py-1.5 text-xs" placeholder="Optional reviewer (AgentOS picks the most qualified resource-deep-review specialist when blank)"/>}
+    {['reject','dismiss-duplicate','mark-manual-only','approve-supersession'].includes(action)&&<input value={reason} onChange={e=>setReason(e.target.value)} className="w-full rounded border border-border bg-background px-2 py-1.5 text-xs" placeholder={action==='approve-supersession'?'Required capability note / winning resource id (payload.preferredResourceId)':action==='mark-manual-only'?'Optional reason for manual-only':action==='dismiss-duplicate'?'Duplicate of which resource? (optional)':'Rejection reason (optional)'}/>}
+    <div className="flex justify-end gap-2"><Button size="sm" variant="outline" disabled={busy} onClick={onCancel}>Cancel</Button><Button size="sm" disabled={busy} onClick={()=>void submit()}>{busy?'Working…':action==='approve'?'Promote':'Apply'}</Button></div>
+  </div>
+}
+function ArsenalHistory({history}:{history:ArsenalPromotion[]}){
+  if(history.length===0)return <div className="text-sm text-muted-foreground">No promotion history yet.</div>
+  return <div className="space-y-2">{[...history].reverse().map(promo=><div key={promo.promotionBatchId} className="rounded-lg border border-border/50 bg-background/40 p-3">
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1"><span className="text-sm font-medium font-mono">{promo.promotionBatchId}</span><span className="text-[10px] text-muted-foreground">{promo.approvedAt}</span></div>
+    <div className="text-[11px] text-muted-foreground mt-1">Resources: {promo.approvedResources.join(', ')||'—'}</div>
+    {(promo.previousState||promo.newState)&&<div className="text-[11px] text-muted-foreground mt-0.5">{promo.previousState?`prior ${JSON.stringify(promo.previousState)}`:'—'} → {promo.newState?JSON.stringify(promo.newState):'—'}</div>}
+    {promo.capabilitiesAdded.length>0&&<div className="text-[11px] text-muted-foreground mt-0.5">Capabilities: {promo.capabilitiesAdded.join(', ')}</div>}
+    {promo.overlapChanges.length>0&&<div className="text-[11px] text-muted-foreground mt-0.5">Overlaps: {promo.overlapChanges.join('; ')}</div>}
+    {promo.warnings.length>0&&<div className="mt-1 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-300">{promo.warnings.join(' · ')}</div>}
+  </div>)}
+  </div>
+}
+function ArsenalOverlaps({registry}:{registry:ArsenalState['registry']}){
+  if(!registry)return <div className="text-sm text-muted-foreground">Overlap data unavailable.</div>
+  const superseded=registry.resources.filter(resource=>resource.supersededBy&&resource.supersededBy.length>0)
+  return <div className="space-y-2">
+    {superseded.length>0&&<div className="rounded-lg border border-border/50 bg-background/40 p-3"><div className="text-xs font-mono uppercase text-muted-foreground mb-1">Supersessions</div>{superseded.map(resource=><div key={resource.id} className="text-[11px] text-muted-foreground">{resource.name} superseded by {resource.supersededBy?.join(', ')}</div>)}</div>}
+    {registry.overlapGroups.map(group=><div key={group.capability+group.preferredId} className="rounded-lg border border-border/50 bg-background/40 p-3"><div className="text-xs font-medium">{group.capability}</div><div className="text-[11px] text-muted-foreground mt-1">Preferred: {group.preferredId}</div><div className="text-[11px] text-muted-foreground">Candidates: {group.candidateIds.join(', ')}</div></div>)}
+    {registry.overlapGroups.length===0&&superseded.length===0&&<div className="text-sm text-muted-foreground">No overlap groups or supersessions recorded.</div>}
+  </div>
+}
+function ArsenalRisks({registry,reviews}:{registry:ArsenalState['registry'];reviews:ArsenalReviewItem[]}){
+  const risky=(registry?.resources||[]).filter(resource=>resource.moveRisk||resource.pathSensitive)
+  const queueRisks=reviews.filter(item=>item.runtimePathRisks.length>0)
+  return <div className="space-y-2">
+    {risky.length===0&&queueRisks.length===0&&<div className="text-sm text-muted-foreground">No runtime/path risks flagged.</div>}
+    {risky.map(resource=><div key={resource.id} className="rounded-lg border border-border/50 bg-background/40 p-3"><div className="text-sm font-medium">{resource.name}</div>{resource.moveRisk&&<div className="text-[11px] text-muted-foreground mt-1">{resource.moveRisk}</div>}{resource.pathSensitive&&<div className="text-[11px] text-amber-400 mt-1">Path-sensitive — do not relocate without re-pointing integrations</div>}</div>)}
+    {queueRisks.map(item=><div key={item.reviewId} className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3"><div className="text-sm font-medium">{item.probableName}</div><div className="text-[11px] text-amber-300 mt-1">{item.runtimePathRisks.join(' · ')}</div></div>)}
+  </div>
+}
+function ArsenalBacklog({backlog}:{backlog:Array<{id:string;name:string;status:string}>}){
+  return <div>
+    <p className="text-xs text-muted-foreground mb-2">Proposed future knowledge packs — deliberately NOT built yet. They are backlog items for future AgentOS-delegated knowledge-curation missions.</p>
+    {backlog.map(item=><div key={item.id} className="rounded-lg border border-border/50 bg-background/40 p-3 mb-2"><div className="flex items-center gap-2"><span className="text-sm font-medium">{item.name}</span><span className="text-[10px] font-mono uppercase text-muted-foreground">{item.status}</span></div><div className="text-[11px] text-muted-foreground mt-1">{item.id}</div></div>)}
+    {backlog.length===0&&<div className="text-sm text-muted-foreground">No backlog recorded.</div>}
+  </div>
+}
