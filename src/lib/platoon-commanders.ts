@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { isGamutHostListeningSync } from './gamut-host'
+import { isGamutHostListeningSync, getGamutHostEffectiveRuntime } from './gamut-host'
 
 export interface PlatoonAgentDescriptor {
   id: string
@@ -10,6 +10,8 @@ export interface PlatoonAgentDescriptor {
   definitionPath: string | null
   identity: string
   model: string | null
+  /** Effective model provider (inherited from the platoon/host runtime). */
+  provider: string | null
   isCommander: boolean
 }
 
@@ -92,7 +94,7 @@ class HermesCommanderAdapter implements PlatoonCommanderAdapter {
         const model = yamlScalar(config, 'model')
         const roleLine = identity.match(/^ROLE\s*\r?\n-\s*(.+)$/im)?.[1]?.trim()
         const role = roleLine || description || (name === 'orchestrator' ? 'Platoon Commander' : 'Hermes Agent')
-        agents.push({ id: `hermes:${name}`, name, role, definitionPath: dir, identity: hermesCapabilityText(identity, profile), model, isCommander: name === 'orchestrator' })
+        agents.push({ id: `hermes:${name}`, name, role, definitionPath: dir, identity: hermesCapabilityText(identity, profile), model, provider: null, isCommander: name === 'orchestrator' })
       }
     }
     const commander = agents.find(agent => agent.isCommander)
@@ -141,7 +143,7 @@ class CodexCommanderAdapter implements PlatoonCommanderAdapter {
         const fullPath = path.join(root, file)
         const config = readText(fullPath)
         const model = config.match(/^model\s*=\s*["']([^"']+)/m)?.[1] || null
-        agents.push({ id: `codex:${name}`, name, role: 'Codex Profile', definitionPath: fullPath, identity: config, model, isCommander: false })
+        agents.push({ id: `codex:${name}`, name, role: 'Codex Profile', definitionPath: fullPath, identity: config, model, provider: null, isCommander: false })
       }
     }
     const codexBin = findCodexBinary()
@@ -167,6 +169,9 @@ class GamutCommanderAdapter implements PlatoonCommanderAdapter {
     const root = process.env.GAMUT_AGENTS_DIR || path.join(appData, 'Superagent', 'agents')
     const agents: PlatoonAgentDescriptor[] = []
     const mountProblems: string[] = []
+    // Gamut agents have no per-agent model config — they inherit the host-wide
+    // LLM provider + agent model (settings.json). Resolve once per discovery.
+    const effectiveRuntime = getGamutHostEffectiveRuntime()
     if (existsSync(root)) {
       for (const slug of readdirSync(root)) {
         const dir = path.join(root, slug)
@@ -205,7 +210,8 @@ class GamutCommanderAdapter implements PlatoonCommanderAdapter {
           role,
           definitionPath: dir,
           identity: gamutCapabilityText(identity),
-          model: null,
+          model: effectiveRuntime.model,
+          provider: effectiveRuntime.provider,
           isCommander,
         })
       }

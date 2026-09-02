@@ -1,5 +1,60 @@
 const DEFAULT_GAMUT_HOST_API = 'http://127.0.0.1:47891/api'
 
+/**
+ * Effective model/provider resolution for Gamut specialists.
+ *
+ * Gamut/SuperAgent agents have NO per-agent model configuration: every agent
+ * inherits the host-wide LLM provider + agent model (settings.json
+ * `llmProvider` / `models.agentModel` — e.g. `openrouter` / `sonnet`). We read
+ * the same settings file the desktop host writes (its `/api/settings` endpoint
+ * mirrors this file) so discovery can attach truthful provider/model metadata
+ * without per-agent config duplication. Secrets (apiKeys/auth) are never read.
+ */
+export interface GamutHostEffectiveRuntime {
+  provider: string | null
+  model: string | null
+  source: 'settings-file' | 'none'
+}
+
+const EFFECTIVE_RUNTIME_TTL_MS = 30_000
+let effectiveRuntimeCache: { at: number; value: GamutHostEffectiveRuntime } | null = null
+
+function resolveGamutHostEffectiveRuntime(): GamutHostEffectiveRuntime {
+  const appData = process.env.APPDATA || require('node:path').join(require('node:os').homedir(), 'AppData', 'Roaming')
+  const settingsPath = require('node:path').join(appData, 'Superagent', 'settings.json')
+  try {
+    const raw = require('node:fs').readFileSync(settingsPath, 'utf8')
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const provider = typeof parsed.llmProvider === 'string' && parsed.llmProvider.trim()
+      ? parsed.llmProvider.trim()
+      : null
+    const models = parsed.models && typeof parsed.models === 'object'
+      ? parsed.models as Record<string, unknown>
+      : {}
+    const model = typeof models.agentModel === 'string' && models.agentModel.trim()
+      ? models.agentModel.trim()
+      : null
+    if (provider || model) return { provider, model, source: 'settings-file' }
+  } catch {
+    /* host not configured or settings file unreadable */
+  }
+  return { provider: null, model: null, source: 'none' }
+}
+
+export function getGamutHostEffectiveRuntime(): GamutHostEffectiveRuntime {
+  const now = Date.now()
+  if (effectiveRuntimeCache && now - effectiveRuntimeCache.at < EFFECTIVE_RUNTIME_TTL_MS) {
+    return effectiveRuntimeCache.value
+  }
+  const value = resolveGamutHostEffectiveRuntime()
+  effectiveRuntimeCache = { at: now, value }
+  return value
+}
+
+export function invalidateGamutEffectiveRuntimeCache(): void {
+  effectiveRuntimeCache = null
+}
+
 export interface GamutHostAgent {
   slug: string
   name?: string

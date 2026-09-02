@@ -105,6 +105,17 @@ function configFor(agent: GlobalRosterAgent, meta?: RosterAgentCostMeta): string
   return JSON.stringify(config)
 }
 
+/**
+ * Cost metadata for a roster agent: an explicit caller override wins;
+ * otherwise the agent's own inherited provider/model (from platoon/host
+ * discovery) is used so classification is truthful without manual input.
+ */
+function effectiveCostMeta(agent: GlobalRosterAgent, override?: RosterAgentCostMeta): RosterAgentCostMeta | undefined {
+  if (override) return override
+  if (agent.provider || agent.model) return { provider: agent.provider ?? null, model: agent.model ?? null }
+  return undefined
+}
+
 function isExternalDiscovered(agent: GlobalRosterAgent): boolean {
   // Mission Control rows (mc:*) are already registered by definition. We
   // register the platoon-discovered specialists (pc: commanders adapters and
@@ -147,7 +158,7 @@ export function registerRosterAgents(input: {
     if (!isExternalDiscovered(agent)) continue
     const name = agentosRoutingAgentName(agent)
     const status = statusFor(agent.availability)
-    const configJson = configFor(agent, input.costMeta?.[agent.id])
+    const configJson = configFor(agent, effectiveCostMeta(agent, input.costMeta?.[agent.id]))
     const role = normalizeRole(agent)
 
     const existing = findStmt.get(name, input.workspaceId) as AgentRow | undefined
@@ -299,7 +310,7 @@ export function syncAgentRoster(input: {
   const agents = roster
     .filter(isExternalDiscovered)
     .map(agent => {
-      const classified = classificationOf(agent, input.costMeta?.[agent.id])
+      const classified = classificationOf(agent, effectiveCostMeta(agent, input.costMeta?.[agent.id]))
       classifications[classified.costClass]++
       const blocker = agent.availability === 'available' || agent.availability === 'busy'
         ? null
@@ -381,7 +392,7 @@ export function buildRosterView(input: {
         .get(name, input.workspaceId) as { name: string } | undefined
       const isRegistered = !!row
       if (isRegistered) registered++
-      const classified = classificationOf(agent, input.costMeta?.[agent.id])
+      const classified = classificationOf(agent, effectiveCostMeta(agent, input.costMeta?.[agent.id]))
       classifications[classified.costClass]++
       const canRun = agent.availability === 'available' || agent.availability === 'busy'
       if (canRun) dispatchable++

@@ -23,6 +23,9 @@ export interface GlobalRosterAgent {
   source: 'mission-control' | 'filesystem'
   capabilities: CapabilityProfile
   performance: { tasks: number; completed: number; completionRate: number | null }
+  /** Effective runtime provider/model (inherited from platoon/host config). */
+  provider?: string | null
+  model?: string | null
 }
 
 interface DbAgentRow {
@@ -109,6 +112,10 @@ function parseConfig(raw: string | null): Record<string, unknown> {
   } catch {
     return {}
   }
+}
+
+function configString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
 /**
@@ -244,6 +251,8 @@ export function getGlobalAgentRoster(workspaceId: number): GlobalRosterAgent[] {
       capabilities: capabilitiesFor(agent.role, config),
       performance: { tasks: task?.total || 0, completed: task?.completed || 0,
         completionRate: task?.total ? Math.round((task.completed / task.total) * 100) : null },
+      provider: configString(config.provider),
+      model: configString(config.model),
     })
   }
 
@@ -259,6 +268,8 @@ export function getGlobalAgentRoster(workspaceId: number): GlobalRosterAgent[] {
         definitionPath: discovered.definitionPath, source: 'filesystem',
         capabilities: capabilitiesFor(role, {}, discovered.identity),
         performance: externalPerformance.get(`pc:${discovered.id}`) || { tasks: 0, completed: 0, completionRate: null },
+        provider: discovered.provider ?? null,
+        model: discovered.model ?? null,
       })
     }
   }

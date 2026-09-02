@@ -306,10 +306,37 @@ helper heals already-created suite tasks to the current spec.
 Result on Objective 1: **M1–M5 (tasks 9–13) routed** to the curator proxy
 (`assigned`, required `[knowledge-curation]`, per-mission preferred sets
 preserved — M5 keeps `enemy-ai` preferred, M6 keeps `testing-review`/`qa-release`
-preferred); M6 stays `backlog` dependency-gated. The regenerated execution
-preview shows M1–M5 **UNKNOWN_COST** (no model/provider evidence in the
-definition — truthful, not FREE_LOCAL), M6 BLOCKED (unassigned), approval
-required. **Nothing dispatched**: 0 delegations, 0 approvals, 0
+preferred); M6 stays `backlog` dependency-gated.
+
+### Effective runtime cost resolution (truthful provider/model)
+
+Gamut/SuperAgent specialists have **no per-agent model configuration**: every
+agent inherits the host-wide LLM provider + agent model from `settings.json`
+(`llmProvider` / `models.agentModel`). On this machine that is
+`openrouter` / `sonnet` (Claude Sonnet via the OpenRouter API, keys configured
+in the desktop app) — a **remote paid API**, never free. `getGamutHostEffectiveRuntime()`
+(`gamut-host.ts`) reads that settings file (TTL-cached, GET-only, never touches
+`apiKeys`/auth) and discovery attaches `provider`/`model` to every Gamut
+descriptor; the roster and sync propagate them into the registered agent
+`config`, so execution planning classifies truthfully: **gamut + openrouter =
+PAID_ESTIMATED** (paid, exact per-token price not stored — no invented
+pricing), gamut + `provider: local` = FREE_LOCAL, no evidence = UNKNOWN_COST.
+A localhost host API never implies free.
+
+Local-model inventory: **no usable local inference runtime** — `~/.ollama`
+holds `qwen2.5-coder:7b` weights (4.4 GB, June install) but the Ollama app is
+not installed/running; Ollama integrations are configured to a *cloud* model
+(`minimax-m3:cloud`). LM Studio / llama.cpp / LocalAI absent. Even if started,
+qwen2.5-coder:7b is **MARGINAL** for multi-source synthesis / long-context /
+structured JSON authoring — not recommended as the suite worker just to reach
+FREE_LOCAL.
+
+Live after the fix: **26 agents stable** (19 Gamut now carry
+provider=openrouter/model=sonnet → PAID_ESTIMATED; 7 Hermes unchanged →
+UNKNOWN_COST), curator identity/binding/capabilities untouched, re-sync a
+no-op. Objective-1 preview regenerated: M1–M5 **PAID_ESTIMATED** (openrouter /
+sonnet, approval required), M6 BLOCKED (unassigned), paid 5 / free 0 /
+unknown 0. **Nothing dispatched**: 0 delegations, 0 approvals, 0
 `in_progress` tasks.
 
 ## Deferred
