@@ -38,6 +38,7 @@ const SPECIALIST_AFFINITY: Array<[string, RegExp]> = [
   ['build-repository', /build|repository/i],
   ['multiplayer-networking', /multiplayer|online/i],
   ['qa-release', /qa|playtest|release verification/i],
+  ['resource-deep-review', /deep reviewer|resource reviewer|arsenal|resource auditor|curator/i],
   ['construction-estimating', /estimating|estimator|takeoff/i],
 ]
 

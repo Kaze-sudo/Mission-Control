@@ -90,6 +90,7 @@ const CAPABILITY_KEYWORDS: Array<[RegExp, string]> = [
   [/multiplayer|network|online|netcode|authority|replication/i, 'multiplayer-networking'],
   [/playtest|release verification|quality assurance|regression|acceptance/i, 'qa-release'],
   [/estimating|takeoff|pricebook|xactimate|freebuff|material quantities/i, 'construction-estimating'],
+  [/deep review|resource review|arsenal|registry audit|resource audit|curator/i, 'resource-deep-review'],
   [/jobs|clients|schedules|crews|subcontractors|suppliers|job packets/i, 'construction-operations'],
   [/document|docs|writer/i, 'documentation'],
 ]

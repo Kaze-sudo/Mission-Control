@@ -144,7 +144,7 @@ describe('performArsenalAction — reject / dismiss / manual-only / deep review'
     const item = reviewQueueItems(root).find(i => i.review_id === 'rq-pending-newlib')
     expect(item?.review_status).toBe('DEEP_REVIEW_REQUESTED')
     expect(item?.deep_review.required_capability).toBe('resource-deep-review')
-    expect(item?.deep_review.status).toBe('queued')
+    expect(item?.deep_review.status).toBe('QUEUED')
     expect(item?.deep_review.reviewer).toBe('squad-reviewer-alpha')
     expect(item?.deep_review.requested_by).toBe('agentos')
   })

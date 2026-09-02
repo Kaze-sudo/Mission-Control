@@ -70,6 +70,41 @@ function nowIso(): string { return new Date().toISOString() }
 
 const catalogFile = (catalog: string, name: string) => path.join(catalog, name)
 
+/** Read a canonical catalog document by file name (null when unreadable). */
+export function readCatalogDoc(catalog: string, name: string): Record<string, unknown> | null {
+  return readJson(catalogFile(catalog, name))
+}
+
+/**
+ * Atomically commit catalog document updates: validate → backup → write temp +
+ * rename, restoring every touched file from backup if any step fails.
+ */
+export function commitCatalogUpdates(catalog: string, updates: PlannedUpdate): string[] {
+  for (const [, content] of updates) JSON.parse(content)
+  if (updates.size === 0) return []
+  const backupDir = path.join(catalog, '.agentos-backups', nowIso().replace(/[:.]/g, '-'))
+  fs.mkdirSync(backupDir, { recursive: true })
+  const written: string[] = []
+  try {
+    for (const [name, content] of updates) {
+      const file = catalogFile(catalog, name)
+      if (fs.existsSync(file)) fs.copyFileSync(file, path.join(backupDir, name))
+      const tmp = file + '.tmp-' + process.pid + '-' + Date.now()
+      fs.writeFileSync(tmp, content, 'utf8')
+      fs.renameSync(tmp, file)
+      written.push(name)
+    }
+  } catch (err) {
+    for (const name of written) {
+      const file = catalogFile(catalog, name)
+      const backup = path.join(backupDir, name)
+      if (fs.existsSync(backup)) fs.copyFileSync(backup, file)
+    }
+    throw err
+  }
+  return written
+}
+
 /** Find a review-queue item by reviewId, probableName, or path suffix. */
 function findQueueItem(items: any[], resourceId: string): any | null {
   const needle = resourceId.toLowerCase()
@@ -448,7 +483,7 @@ function planRequestDeepReview(catalog: string, resourceId: string, actor: strin
   }
   item.deep_review = {
     required_capability: String(payload.promotion?.required_capability || 'resource-deep-review'),
-    status: 'queued',
+    status: 'QUEUED',
     requested_at: nowIso(),
     requested_by: actor || 'agentos',
     reviewer: payload.reviewer || null,
@@ -570,34 +605,12 @@ export function performArsenalAction(input: {
     default: throw new Error('Unknown arsenal action: ' + String(input.action))
   }
 
-  // Validate every target document parses before touching disk.
-  for (const [, content] of planned.updates) {
-    JSON.parse(content)
+  return {
+    ok: true,
+    action: input.action,
+    resourceId,
+    updatedFiles: commitCatalogUpdates(catalog, planned.updates),
+    message: planned.message,
+    detail: planned.detail,
   }
-  if (planned.updates.size === 0) {
-    return { ok: true, action: input.action, resourceId, updatedFiles: [], message: planned.message, detail: planned.detail }
-  }
-
-  const backupDir = path.join(catalog, '.agentos-backups', nowIso().replace(/[:.]/g, '-'))
-  fs.mkdirSync(backupDir, { recursive: true })
-  const written: string[] = []
-  try {
-    for (const [name, content] of planned.updates) {
-      const file = catalogFile(catalog, name)
-      if (fs.existsSync(file)) fs.copyFileSync(file, path.join(backupDir, name))
-      const tmp = file + '.tmp-' + process.pid + '-' + Date.now()
-      fs.writeFileSync(tmp, content, 'utf8')
-      fs.renameSync(tmp, file)
-      written.push(name)
-    }
-  } catch (err) {
-    for (const name of written) {
-      const file = catalogFile(catalog, name)
-      const backup = path.join(backupDir, name)
-      if (fs.existsSync(backup)) fs.copyFileSync(backup, file)
-    }
-    throw err
-  }
-
-  return { ok: true, action: input.action, resourceId, updatedFiles: written, message: planned.message, detail: planned.detail }
 }

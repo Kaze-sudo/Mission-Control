@@ -60,11 +60,48 @@ then writes with backup (`_CATALOG/.agentos-backups/`) + atomic rename, rolling
 back on failure. Promotions preserve stable IDs and record history; no physical
 moves ever happen.
 
+## Deep-review mission lifecycle (`src/lib/resource-deep-review.ts`)
+
+`Request Deep Review` in the Review Queue creates a NORMAL AgentOS mission:
+
+1. **Queued** — the existing `request-deep-review` action marks the item QUEUED.
+2. **Mission created** — `POST /api/agentos/resources/deep-review`
+   (`createDeepReviewMission`) inserts an `agentos-resource-review` tagged task
+   carrying the canonical `agentos_resource_review` contract: review_id,
+   resource id/path, `required_output_schema: agentos-resource-review-v1`,
+   filtered registry + overlap snapshots, creation metadata, and a SHA-256
+   **fingerprint** of the candidate + its registry entry.
+3. **Requirements inferred** — required capability is always
+   `resource-deep-review`; preferred capabilities are inferred from the
+   candidate's detected capabilities plus a declared domain-affinity map (game
+   → game-development/qa-release/architecture, mcp → mcp/backend/security,
+   knowledge → research/knowledge-management, …).
+4. **Reviewer routed** — the task flows through the normal
+   `routeTaskWithinProject` project/specialist selector (respecting the project
+   command guard at dispatch, platoon allowlists, availability, specialist
+   affinity, concurrency). No parallel dispatcher.
+5. **Dispatch** — the existing scheduler dispatches it over the chosen native
+   runtime (Hermes/Gamut/Codex/Claude/…); the delegation ledger tracks
+   session/run IDs.
+6. **Result ingestion** — `reconcileDeepReviewMissions` (wired into the
+   scheduler's `task_dispatch` job) parses completed responses, validates the
+   `agentos-resource-review-v1` envelope (review_id/resource_id match, field
+   enums, policy conflicts), re-checks the fingerprint (STALE protection), and
+   marks the queue item REVIEW_COMPLETE with the structured proposal attached.
+   The authoritative registry is NEVER auto-promoted — a human approves via the
+   existing atomic action model.
+
+**Review states**: `QUEUED → ROUTED → RUNNING → COMPLETE`, with `FAILED`
+(invalid/mismatched output), `STALE` (resource changed during review),
+`NEEDS_MANUAL`, and safe retry that reuses the existing mission task rather
+than duplicating it.
+
 ## Delegation, not hard-coding
 
-Deep review is a native AgentOS delegation capability (`resource-deep-review`),
-routed to the most qualified reviewer at the time. Freebuff is one available
-reviewer, not the permanent one.
+Deep review is a native AgentOS delegation capability (`resource-deep-review`)
+routed to the most qualified reviewer at the time from the global roster
+(capability tags + specialist affinity). Freebuff is one available reviewer,
+not the permanent one.
 
 ## Deferred (Phase 12)
 

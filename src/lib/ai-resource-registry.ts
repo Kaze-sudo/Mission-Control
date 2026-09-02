@@ -125,7 +125,22 @@ export interface AiReviewQueueItem {
   promotionBatchId: string | null
   approvedAt: string | null
   finalApprovedDecision: string | null
-  deepReview?: { requiredCapability: string; status: string; requestedAt: string; requestedBy: string | null; reviewer: string | null }
+  deepReview?: {
+    requiredCapability: string
+    status: string
+    requestedAt: string
+    requestedBy: string | null
+    reviewer: string | null
+    taskId: number | null
+    projectId: number | null
+    fingerprint: string | null
+    retries: number
+    error: string | null
+    routing: { externalAgentId?: string; agentName?: string; platoonId?: string; routingAgentName?: string } | null
+    result: unknown
+    proposal: Record<string, unknown> | null
+    reviewCompletedAt: string | null
+  }
   raw: Record<string, unknown>
 }
 
@@ -681,7 +696,22 @@ export function getAiReviewQueue(root=config.aiVaultRoot): AiReviewQueueItem[] {
     promotionBatchId:item.promotion_batch_id?String(item.promotion_batch_id):null,
     approvedAt:item.approved_at?String(item.approved_at):null,
     finalApprovedDecision:item.final_approved_decision?String(item.final_approved_decision):null,
-    deepReview:item.deep_review?{requiredCapability:String(item.deep_review.required_capability||'resource-deep-review'),status:String(item.deep_review.status||'queued'),requestedAt:String(item.deep_review.requested_at||''),requestedBy:item.deep_review.requested_by?String(item.deep_review.requested_by):null,reviewer:item.deep_review.reviewer?String(item.deep_review.reviewer):null}:undefined,
+    deepReview:item.deep_review?{
+      requiredCapability:String(item.deep_review.required_capability||'resource-deep-review'),
+      status:String(item.deep_review.status||'QUEUED'),
+      requestedAt:String(item.deep_review.requested_at||''),
+      requestedBy:item.deep_review.requested_by?String(item.deep_review.requested_by):null,
+      reviewer:item.deep_review.reviewer?String(item.deep_review.reviewer):null,
+      taskId:typeof item.deep_review.task_id==='number'?item.deep_review.task_id:null,
+      projectId:typeof item.deep_review.project_id==='number'?item.deep_review.project_id:null,
+      fingerprint:item.deep_review.fingerprint?String(item.deep_review.fingerprint):null,
+      retries:typeof item.deep_review.retries==='number'?item.deep_review.retries:0,
+      error:item.deep_review.error?String(item.deep_review.error):null,
+      routing:item.deep_review.routing&&typeof item.deep_review.routing==='object'?item.deep_review.routing:null,
+      result:item.deep_review.result??null,
+      proposal:item.deep_review.proposal&&typeof item.deep_review.proposal==='object'?item.deep_review.proposal:null,
+      reviewCompletedAt:item.deep_review.review_completed_at?String(item.deep_review.review_completed_at):null,
+    }:undefined,
     raw:item,
   }))
 }

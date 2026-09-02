@@ -11,6 +11,7 @@ import { eventBus } from './event-bus'
 import { syncSkillsFromDisk } from './skill-sync'
 import { syncLocalAgents } from './local-agent-sync'
 import { dispatchAssignedTasks, runAegisReviews, requeueStaleTasks, autoRouteInboxTasks, reconcileDeferredTaskCompletions } from './task-dispatch'
+import { reconcileDeepReviewMissions } from './resource-deep-review'
 import { brokerAgentOSDispatchQueue } from './agentos-dispatch-broker'
 import { spawnRecurringTasks } from './recurring-tasks'
 import { resolveSharedRuntimeWorkspaceId } from './workspace-isolation'
@@ -479,9 +480,10 @@ async function tick() {
           })
         : id === 'task_dispatch' ? await autoRouteInboxTasks().then(async (routeResult) => {
             const reconcileResult = await reconcileDeferredTaskCompletions()
+            const deepReviewResult = reconcileDeepReviewMissions()
             const brokerResult = brokerAgentOSDispatchQueue()
             const dispatchResult = await dispatchAssignedTasks()
-            const parts = [reconcileResult.message, routeResult.message, brokerResult.message, dispatchResult.message].filter(m => m && !m.includes('No ') && !m.includes('none completed'))
+            const parts = [reconcileResult.message, routeResult.message, deepReviewResult.message, brokerResult.message, dispatchResult.message].filter(m => m && !m.includes('No ') && !m.includes('none completed'))
             return { ok: routeResult.ok && reconcileResult.ok && brokerResult.ok && dispatchResult.ok, message: parts.join(' | ') || 'No tasks to reconcile, route, or dispatch' }
           })
         : id === 'aegis_review' ? await runAegisReviews()
@@ -549,7 +551,7 @@ export async function triggerTask(taskId: string, workspaceId?: number): Promise
   if (taskId === 'skill_sync') return syncSkillsFromDisk()
   if (taskId === 'local_agent_sync') return syncLocalAgents(workspaceId)
   if (taskId === 'gateway_agent_sync') return syncAgentsFromConfig('manual', workspaceId).then(r => ({ ok: !r.error, message: r.error || `Gateway sync: ${r.created} created, ${r.updated} updated, ${r.synced} total` }))
-  if (taskId === 'task_dispatch') return autoRouteInboxTasks().then(async (r) => { const c = await reconcileDeferredTaskCompletions(); const b = brokerAgentOSDispatchQueue(workspaceId); const d = await dispatchAssignedTasks(); return { ok: r.ok && c.ok && b.ok && d.ok, message: [c.message, r.message, b.message, d.message].filter(m => m && !m.includes('No ') && !m.includes('none completed')).join(' | ') || 'No tasks' } })
+  if (taskId === 'task_dispatch') return autoRouteInboxTasks().then(async (r) => { const c = await reconcileDeferredTaskCompletions(); const dr = reconcileDeepReviewMissions(); const b = brokerAgentOSDispatchQueue(workspaceId); const d = await dispatchAssignedTasks(); return { ok: r.ok && c.ok && b.ok && d.ok, message: [c.message, r.message, dr.message, b.message, d.message].filter(m => m && !m.includes('No ') && !m.includes('none completed')).join(' | ') || 'No tasks' } })
   if (taskId === 'aegis_review') return runAegisReviews()
   if (taskId === 'recurring_task_spawn') return spawnRecurringTasks()
   if (taskId === 'stale_task_requeue') return requeueStaleTasks()

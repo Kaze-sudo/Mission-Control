@@ -22,7 +22,12 @@ interface ArsenalResource { id:string; name:string; path:string; type:string; sc
 interface ArsenalCoverageEntry { resourceId:string; name:string; score:number|null; status:string; autoSelectAllowed:boolean; manualOnly:boolean; usage:string|null; note:string|null; preferredPlatoon:string|null; preferredSpecialistRole:string|null }
 interface ArsenalCoverage { capability:string; status:'FILLED'|'PARTIALLY_COVERED'|'OPEN'; preferred:ArsenalCoverageEntry[]; secondary:ArsenalCoverageEntry[]; reference:ArsenalCoverageEntry[]; notProviders:string[]; note:string|null }
 interface ArsenalChangeState { scanId:string; scanTime:string; baselineVersion:string; unchanged:string[]; changed:string[]; new:string[]; missing:string[]; duplicateCandidates:string[]; supersessionCandidates:string[]; promoted:string[]; gapNote:string }
-interface ArsenalReviewItem { reviewId:string; detectedState:string; path:string; probableName:string; probableSourceRepo:string|null; probableResourceType:string|null; detectedCapabilities:string[]; inferredPrimaryCapability:string|null; coversCapabilityGaps:string[]; likelyOverlaps:string[]; runtimePathRisks:string[]; preliminaryQualityScore:number|null; preliminaryAgentosRelevance:string|null; suggestedPlatoon:string|null; suggestedSpecialistRole:string|null; recommendedAction:string|null; reviewStatus:string; pending:boolean; promotionBatchId:string|null; finalApprovedDecision:string|null; deepReview?:{requiredCapability:string;status:string;reviewer:string|null} }
+interface ArsenalDeepReview { requiredCapability:string; status:string; requestedAt:string; requestedBy:string|null; reviewer:string|null; taskId:number|null; projectId:number|null; fingerprint:string|null; retries:number; error:string|null; routing:{externalAgentId?:string;agentName?:string;platoonId?:string;routingAgentName?:string}|null; result:unknown; proposal:Record<string,unknown>|null; reviewCompletedAt:string|null }
+interface ArsenalReviewItem { reviewId:string; detectedState:string; path:string; probableName:string; probableSourceRepo:string|null; probableResourceType:string|null; detectedCapabilities:string[]; inferredPrimaryCapability:string|null; coversCapabilityGaps:string[]; likelyOverlaps:string[]; runtimePathRisks:string[]; preliminaryQualityScore:number|null; preliminaryAgentosRelevance:string|null; suggestedPlatoon:string|null; suggestedSpecialistRole:string|null; recommendedAction:string|null; reviewStatus:string; pending:boolean; promotionBatchId:string|null; finalApprovedDecision:string|null; deepReview?:ArsenalDeepReview }
+interface ArsenalReviewMissionTrace {
+  taskId:number; reviewId:string; title:string; status:string; assignedTo:string|null; projectId:number|null; createdAt:number; updatedAt:number; reviewState:string|null; fingerprint:string|null
+  delegation: { id:string|null; status:string|null; nativeSessionId:string|null; nativeRunId:string|null; attempt:number|null; runtimeType:string|null; platoonId:string|null; specialistName:string|null; errorMessage:string|null } | null
+}
 interface ArsenalPromotion { promotionBatchId:string; approvedAt:string; approvedResources:string[]; previousState:Record<string,unknown>|null; newState:Record<string,unknown>|null; capabilitiesAdded:string[]; overlapChanges:string[]; warnings:string[]; reviewerDecision:string|null }
 interface ArsenalState {
   registry: { resources: ArsenalResource[]; overlapGroups: Array<{capability:string;preferredId:string;candidateIds:string[]}>; summary:{ total:number; keep:number } } | null
@@ -31,6 +36,7 @@ interface ArsenalState {
   reviewQueue: ArsenalReviewItem[]
   promotionHistory: ArsenalPromotion[]
   knowledgePackBacklog: Array<{ id:string; name:string; status:string }>
+  missions?: ArsenalReviewMissionTrace[]
   summary?: { resources:number; capabilities:number; filled:number; partiallyCovered:number; open:number; pendingReviews:number }
 }
 type ArsenalTab = 'recommendations'|'registry'|'coverage'|'changes'|'reviews'|'history'|'overlaps'|'risks'|'backlog'
@@ -58,6 +64,7 @@ export function ProjectCommandPanel() {
   const [actionError,setActionError]=useState<string|null>(null)
   const [actionMessage,setActionMessage]=useState<string|null>(null)
   const [pendingAction,setPendingAction]=useState<{resourceId:string;action:string}|null>(null)
+  const [deepReviewBusy,setDeepReviewBusy]=useState(false)
   const [handoffFrom,setHandoffFrom]=useState('')
   const [handoffCaps,setHandoffCaps]=useState('')
   const [handoffInstructions,setHandoffInstructions]=useState('')
@@ -102,8 +109,11 @@ export function ProjectCommandPanel() {
 
   const loadArsenal=useCallback(async()=>{
     try{
-      const data=await apiFetch<ArsenalState>('/api/agentos/resources')
-      setArsenal({registry:data.registry,capabilityCoverage:data.capabilityCoverage||[],changes:data.changes||null,reviewQueue:data.reviewQueue||[],promotionHistory:data.promotionHistory||[],knowledgePackBacklog:data.knowledgePackBacklog||[],summary:data.summary})
+      const [data,missions]=await Promise.all([
+        apiFetch<ArsenalState>('/api/agentos/resources'),
+        apiFetch<{missions?:ArsenalReviewMissionTrace[]}>('/api/agentos/resources/deep-review'),
+      ])
+      setArsenal({registry:data.registry,capabilityCoverage:data.capabilityCoverage||[],changes:data.changes||null,reviewQueue:data.reviewQueue||[],promotionHistory:data.promotionHistory||[],knowledgePackBacklog:data.knowledgePackBacklog||[],missions:missions.missions||[],summary:data.summary})
     }catch{/* Arsenal companion view is non-fatal */}
   },[])
   useEffect(()=>{void loadArsenal()},[loadArsenal])
@@ -127,6 +137,16 @@ export function ProjectCommandPanel() {
     }catch(err){setActionError(err instanceof Error?err.message:'Arsenal action failed')}
     finally{setActionBusy(false)}
   },[loadArsenal])
+
+  const runDeepReviewAction=useCallback(async(payload:{action:'create'|'retry';reviewId:string;reviewer?:string})=>{
+    setDeepReviewBusy(true);setActionError(null);setActionMessage(null)
+    try{
+      const response=await apiFetch<{ok?:boolean;mission?:{taskId:number;reviewed:boolean}&Record<string,unknown>;error?:string}>(`/api/agentos/resources/deep-review`,{method:'POST',body:JSON.stringify({...payload,projectId})})
+      if(response.ok){setActionMessage(`Deep-review mission ${response.mission?.taskId?'#'+response.mission.taskId+' ':''}${payload.action==='retry'?'re-created':'created'}`);setPendingAction(null);await loadArsenal()}
+      else setActionError(response.error||'Failed to create deep-review mission')
+    }catch(err){setActionError(err instanceof Error?err.message:'Failed to create deep-review mission')}
+    finally{setDeepReviewBusy(false)}
+  },[loadArsenal,projectId])
 
   const createObjective=useCallback(async()=>{
     if(!projectId||!objectiveTitle.trim())return
@@ -255,7 +275,7 @@ export function ProjectCommandPanel() {
             {arsenalTab==='registry'&&<ArsenalRegistry registry={arsenal?.registry||null}/>}
             {arsenalTab==='coverage'&&<ArsenalCoverage coverage={arsenal?.capabilityCoverage||[]}/>}
             {arsenalTab==='changes'&&<ArsenalChanges changes={arsenal?.changes||null}/>}
-            {arsenalTab==='reviews'&&<ArsenalReviews items={arsenal?.reviewQueue||[]} pendingAction={pendingAction} setPendingAction={setPendingAction} busy={actionBusy} onSubmit={submitArsenalAction}/>}
+            {arsenalTab==='reviews'&&<ArsenalReviews items={arsenal?.reviewQueue||[]} missions={arsenal?.missions||[]} pendingAction={pendingAction} setPendingAction={setPendingAction} busy={actionBusy} onSubmit={submitArsenalAction} deepReviewBusy={deepReviewBusy} onDeepReview={runDeepReviewAction}/>}
             {arsenalTab==='history'&&<ArsenalHistory history={arsenal?.promotionHistory||[]}/>}
             {arsenalTab==='overlaps'&&<ArsenalOverlaps registry={arsenal?.registry||null}/>}
             {arsenalTab==='risks'&&<ArsenalRisks registry={arsenal?.registry||null} reviews={arsenal?.reviewQueue||[]}/>}
@@ -389,24 +409,71 @@ function ArsenalChanges({changes}:{changes:ArsenalChangeState|null}){
     {changes.gapNote&&<p className="text-[11px] text-muted-foreground mt-2">{changes.gapNote}</p>}
   </div>
 }
-function ArsenalReviews({items,pendingAction,setPendingAction,busy,onSubmit}:{items:ArsenalReviewItem[];pendingAction:{resourceId:string;action:string}|null;setPendingAction:(value:{resourceId:string;action:string}|null)=>void;busy:boolean;onSubmit:(payload:{action:string;resourceId:string;reason?:string;reviewer?:string;promotion?:Record<string,unknown>})=>Promise<void>}){
+function ArsenalReviews({items,missions,pendingAction,setPendingAction,busy,onSubmit,deepReviewBusy,onDeepReview}:{
+  items:ArsenalReviewItem[]
+  missions:ArsenalReviewMissionTrace[]
+  pendingAction:{resourceId:string;action:string}|null
+  setPendingAction:(value:{resourceId:string;action:string}|null)=>void
+  busy:boolean
+  onSubmit:(payload:{action:string;resourceId:string;reason?:string;reviewer?:string;promotion?:Record<string,unknown>})=>Promise<void>
+  deepReviewBusy:boolean
+  onDeepReview:(payload:{action:'create'|'retry';reviewId:string;reviewer?:string})=>Promise<void>
+}){
   const pending=items.filter(item=>item.pending)
   const decided=items.filter(item=>!item.pending)
+  const reviewInFlight=(item:ArsenalReviewItem)=>['QUEUED','ROUTED','RUNNING'].includes((item.deepReview?.status||'').toUpperCase())
   return <div className="space-y-2">
-    <p className="text-xs text-muted-foreground">Candidates detected by the AI vault scan pipeline ({items.length} total, {pending.length} pending). Approvals run through the validated atomic promotion action — nothing here moves files.</p>
+    <p className="text-xs text-muted-foreground">Candidates detected by the AI vault scan pipeline ({items.length} total, {pending.length} pending). Deep review delegates a structured review mission to the most qualified reviewer; the result is validated (agentos-resource-review-v1) before approvals unlock.</p>
     {pending.length===0&&<div className="text-sm text-muted-foreground">No pending review candidates.</div>}
-    {pending.map(item=><div key={item.reviewId} className="rounded-lg border border-border/50 bg-background/40 p-3">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div><div className="text-sm font-medium">{item.probableName}</div><div className="text-[10px] text-muted-foreground break-all">{item.path}</div></div>
-        <div className="flex flex-wrap gap-1.5">{[['approve','Approve'],['reject','Reject'],['mark-manual-only','Manual-only'],['dismiss-duplicate','Dismiss dup'],['request-deep-review','Deep review']].map(([action,label])=><Button key={action} size="sm" variant="outline" disabled={busy||pendingAction!==null&&pendingAction.resourceId===item.reviewId&&pendingAction.action===action} onClick={()=>setPendingAction({resourceId:item.reviewId,action})}>{label}</Button>)}</div>
+    {pending.map(item=>{
+      const trace=missions.find(mission=>mission.reviewId===item.reviewId)
+      const state=(item.deepReview?.status||'').toUpperCase()
+      const decideDisabled=reviewInFlight(item)
+      const retryable=state==='FAILED'||state==='STALE'||state==='NEEDS_MANUAL'||state==='COMPLETE'
+      const requestable=!item.deepReview||state==='QUEUED'||state==='FAILED'||state==='STALE'
+      return <div key={item.reviewId} className="rounded-lg border border-border/50 bg-background/40 p-3">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div><div className="text-sm font-medium">{item.probableName}</div><div className="text-[10px] text-muted-foreground break-all">{item.path}</div></div>
+          <div className="flex flex-wrap gap-1.5">
+            <Button size="sm" variant="outline" disabled={busy||decideDisabled||pendingAction!==null&&pendingAction.resourceId===item.reviewId&&['approve','reject','mark-manual-only','dismiss-duplicate'].includes(pendingAction.action)} onClick={()=>setPendingAction({resourceId:item.reviewId,action:'approve'})} title={decideDisabled?'Decision unlocked after deep review completes':undefined}>Approve</Button>
+            <Button size="sm" variant="outline" disabled={busy||decideDisabled||pendingAction!==null&&pendingAction.resourceId===item.reviewId&&['approve','reject','mark-manual-only','dismiss-duplicate'].includes(pendingAction.action)} onClick={()=>setPendingAction({resourceId:item.reviewId,action:'reject'})} title={decideDisabled?'Decision unlocked after deep review completes':undefined}>Reject</Button>
+            <Button size="sm" variant="outline" disabled={busy||decideDisabled||pendingAction!==null&&pendingAction.resourceId===item.reviewId&&['approve','reject','mark-manual-only','dismiss-duplicate'].includes(pendingAction.action)} onClick={()=>setPendingAction({resourceId:item.reviewId,action:'mark-manual-only'})} title={decideDisabled?'Decision unlocked after deep review completes':undefined}>Manual-only</Button>
+            <Button size="sm" variant="outline" disabled={busy||decideDisabled||pendingAction!==null&&pendingAction.resourceId===item.reviewId&&['approve','reject','mark-manual-only','dismiss-duplicate'].includes(pendingAction.action)} onClick={()=>setPendingAction({resourceId:item.reviewId,action:'dismiss-duplicate'})} title={decideDisabled?'Decision unlocked after deep review completes':undefined}>Dismiss dup</Button>
+            {requestable&&<Button size="sm" disabled={deepReviewBusy||pendingAction!==null} onClick={()=>setPendingAction({resourceId:item.reviewId,action:'request-deep-review'})}>{state==='FAILED'||state==='STALE'?'Re-request':'Deep review'}</Button>}
+            {retryable&&<Button size="sm" disabled={deepReviewBusy||pendingAction!==null} onClick={()=>setPendingAction({resourceId:item.reviewId,action:'retry-review'})}>Retry</Button>}
+          </div>
+        </div>
+        <div className="text-[11px] text-muted-foreground mt-1.5 break-words">{(item.detectedCapabilities||[]).join(', ')||'no capabilities inferred'} · score {item.preliminaryQualityScore??'—'} · {item.recommendedAction||'no action'}{item.likelyOverlaps.length?` · overlaps: ${item.likelyOverlaps.join(', ')}`:''}{item.runtimePathRisks.length?` · risks: ${item.runtimePathRisks.join(', ')}`:''}</div>
+        {item.deepReview&&<div className="mt-2 rounded border border-border/40 bg-background/50 px-2.5 py-2 text-[11px] space-y-1">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1"><span className="font-mono uppercase text-[10px] text-muted-foreground">Deep review</span><ArsenalStatusBadge status={state||'QUEUED'}/>
+            {item.deepReview.reviewer&&<span>Reviewer: {item.deepReview.reviewer}</span>}
+            {item.deepReview.routing?.platoonId&&<span>Platoon: {item.deepReview.routing.platoonId}</span>}
+            {item.deepReview.retries>0&&<span>Retries: {item.deepReview.retries}</span>}
+            {item.deepReview.taskId&&<span>Mission: Task {item.deepReview.taskId}</span>}
+            {item.deepReview.reviewCompletedAt&&<span>Completed: {item.deepReview.reviewCompletedAt}</span>}
+          </div>
+          {trace&&<div className="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
+            <span>Task {trace.taskId} · {trace.status}</span>
+            {trace.delegation&&                <span>Delegation {trace.delegation.id?.slice(0,8)} · {trace.delegation.status||'pending'} · {trace.delegation.runtimeType||'runtime'}{trace.delegation.platoonId?` · ${trace.delegation.platoonId}`:''}{trace.delegation.specialistName?` · ${trace.delegation.specialistName}`:''}{trace.delegation.nativeSessionId?` · session ${trace.delegation.nativeSessionId.slice(0,12)}`:''}{trace.delegation.nativeRunId?` · run ${trace.delegation.nativeRunId.slice(0,12)}`:''}{(trace.delegation.attempt||0)>1?` · attempt ${trace.delegation.attempt}`:''}</span>}
+            {trace?.delegation?.errorMessage&&<span className="text-destructive">error: {trace.delegation.errorMessage.slice(0,120)}</span>}
+          </div>}
+          {item.deepReview.error&&<div className="text-destructive">{item.deepReview.error}</div>}
+          {(()=>{const result=item.deepReview.result as {quality_score?:number;audit_status_recommendation?:string;primary_capability?:string;confidence?:string}|null;return result&&typeof result==='object'?(<div className="text-muted-foreground">Result: score {result.quality_score??'—'} · {result.audit_status_recommendation??'—'} · {result.primary_capability??'—'} {result.confidence??''}</div>):null})()}
+        </div>}
+        {pendingAction&&pendingAction.resourceId===item.reviewId&&<ArsenalActionForm item={item} action={pendingAction.action} busy={busy||deepReviewBusy} onCancel={()=>setPendingAction(null)} onSubmit={onSubmit} onDeepReview={onDeepReview}/>}
       </div>
-      <div className="text-[11px] text-muted-foreground mt-1.5 break-words">{(item.detectedCapabilities||[]).join(', ')||'no capabilities inferred'} · score {item.preliminaryQualityScore??'—'} · {item.recommendedAction||'no action'}{item.likelyOverlaps.length?` · overlaps: ${item.likelyOverlaps.join(', ')}`:''}{item.runtimePathRisks.length?` · risks: ${item.runtimePathRisks.join(', ')}`:''}</div>
-      {pendingAction&&pendingAction.resourceId===item.reviewId&&<ArsenalActionForm item={item} action={pendingAction.action} busy={busy} onCancel={()=>setPendingAction(null)} onSubmit={onSubmit}/>}
-    </div>)}
+    })}
     {decided.length>0&&<div className="pt-2"><p className="text-[10px] font-mono uppercase text-muted-foreground mb-1.5">Decided</p>{decided.map(item=><div key={item.reviewId} className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded border border-border/40 px-3 py-1.5 text-[11px]"><span className="font-medium">{item.probableName}</span><ArsenalStatusBadge status={item.reviewStatus}/>{item.promotionBatchId&&<span className="text-muted-foreground">{item.promotionBatchId}</span>}{item.finalApprovedDecision&&<span className="text-muted-foreground">{item.finalApprovedDecision}</span>}</div>)}</div>}
   </div>
 }
-function ArsenalActionForm({item,action,busy,onCancel,onSubmit}:{item:ArsenalReviewItem;action:string;busy:boolean;onCancel:()=>void;onSubmit:(p:{action:string;resourceId:string;reason?:string;reviewer?:string;promotion?:Record<string,unknown>})=>Promise<void>}){
+function ArsenalActionForm({item,action,busy,onCancel,onSubmit,onDeepReview}:{
+  item:ArsenalReviewItem
+  action:string
+  busy:boolean
+  onCancel:()=>void
+  onSubmit:(p:{action:string;resourceId:string;reason?:string;reviewer?:string;promotion?:Record<string,unknown>})=>Promise<void>
+  onDeepReview:(p:{action:'create'|'retry';reviewId:string;reviewer?:string})=>Promise<void>
+}){
   const [reason,setReason]=useState('')
   const [reviewer,setReviewer]=useState('')
   const [localError,setLocalError]=useState<string|null>(null)
@@ -425,18 +492,23 @@ function ArsenalActionForm({item,action,busy,onCancel,onSubmit}:{item:ArsenalRev
   },null,2))
   const submit=async()=>{
     setLocalError(null)
+    if(action==='request-deep-review'||action==='retry-review'){
+      await onDeepReview({action:action==='request-deep-review'?'create':'retry',reviewId:item.reviewId,reviewer:reviewer.trim()||undefined})
+      return
+    }
     let promotion:Record<string,unknown>|undefined
     if(action==='approve'){
       try{promotion=JSON.parse(proposal)}catch{setLocalError('Promotion payload is not valid JSON');return}
     }
     await onSubmit({action,resourceId:item.reviewId,reason:reason.trim()||undefined,reviewer:reviewer.trim()||undefined,promotion})
   }
+  const actionLabel=action==='approve'?'Promote':action==='request-deep-review'?'Request deep review':action==='retry-review'?'Retry review':action==='mark-manual-only'?'Mark manual-only':action==='dismiss-duplicate'?'Dismiss duplicate':action==='approve-supersession'?'Approve supersession':'Apply'
   return <div className="mt-2 rounded border border-border/50 bg-background/60 p-2.5 space-y-2">
     {localError&&<div className="text-xs text-destructive">{localError}</div>}
     {action==='approve'&&<textarea value={proposal} onChange={e=>setProposal(e.target.value)} className="min-h-36 w-full rounded border border-border bg-background px-2 py-1.5 font-mono text-[10px]" spellCheck={false}/>}
-    {action==='request-deep-review'&&<input value={reviewer} onChange={e=>setReviewer(e.target.value)} className="w-full rounded border border-border bg-background px-2 py-1.5 text-xs" placeholder="Optional reviewer (AgentOS picks the most qualified resource-deep-review specialist when blank)"/>}
+    {(action==='request-deep-review'||action==='retry-review')&&<input value={reviewer} onChange={e=>setReviewer(e.target.value)} className="w-full rounded border border-border bg-background px-2 py-1.5 text-xs" placeholder="Optional reviewer (AgentOS picks the most qualified resource-deep-review specialist when blank)"/>}
     {['reject','dismiss-duplicate','mark-manual-only','approve-supersession'].includes(action)&&<input value={reason} onChange={e=>setReason(e.target.value)} className="w-full rounded border border-border bg-background px-2 py-1.5 text-xs" placeholder={action==='approve-supersession'?'Required capability note / winning resource id (payload.preferredResourceId)':action==='mark-manual-only'?'Optional reason for manual-only':action==='dismiss-duplicate'?'Duplicate of which resource? (optional)':'Rejection reason (optional)'}/>}
-    <div className="flex justify-end gap-2"><Button size="sm" variant="outline" disabled={busy} onClick={onCancel}>Cancel</Button><Button size="sm" disabled={busy} onClick={()=>void submit()}>{busy?'Working…':action==='approve'?'Promote':'Apply'}</Button></div>
+    <div className="flex justify-end gap-2"><Button size="sm" variant="outline" disabled={busy} onClick={onCancel}>Cancel</Button><Button size="sm" disabled={busy} onClick={()=>void submit()}>{busy?'Working…':actionLabel}</Button></div>
   </div>
 }
 function ArsenalHistory({history}:{history:ArsenalPromotion[]}){
