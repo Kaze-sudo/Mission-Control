@@ -45,6 +45,12 @@ export async function PUT(request: NextRequest, { params }: { params: Promise<{ 
         ...(Number.isFinite(Number(body.maxProjectConcurrent)) ? { maxProjectConcurrent: Number(body.maxProjectConcurrent) } : {}),
         ...(Number.isFinite(Number(body.maxPlatoonConcurrent)) ? { maxPlatoonConcurrent: Number(body.maxPlatoonConcurrent) } : {}),
         ...(Number.isFinite(Number(body.maxAgentConcurrent)) ? { maxAgentConcurrent: Number(body.maxAgentConcurrent) } : {}),
+        ...(typeof body.allowFreeLocalWithoutApproval === 'boolean' ? { allowFreeLocalWithoutApproval: body.allowFreeLocalWithoutApproval } : {}),
+        ...(typeof body.allowFreeRemoteWithoutApproval === 'boolean' ? { allowFreeRemoteWithoutApproval: body.allowFreeRemoteWithoutApproval } : {}),
+        ...(typeof body.allowPaidWithoutApproval === 'boolean' ? { allowPaidWithoutApproval: body.allowPaidWithoutApproval } : {}),
+        ...(body.maxApprovedEstimatedCost === null || Number.isFinite(Number(body.maxApprovedEstimatedCost)) ? { maxApprovedEstimatedCost: body.maxApprovedEstimatedCost === null ? null : Number(body.maxApprovedEstimatedCost) } : {}),
+        ...(Array.isArray(body.approvedProviders) && body.approvedProviders.every(item => typeof item === 'string') ? { approvedProviders: body.approvedProviders } : {}),
+        ...(Array.isArray(body.blockedProviders) && body.blockedProviders.every(item => typeof item === 'string') ? { blockedProviders: body.blockedProviders } : {}),
       },
     })
     return NextResponse.json({ command })

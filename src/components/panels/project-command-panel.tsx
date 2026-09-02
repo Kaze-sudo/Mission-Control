@@ -7,7 +7,7 @@ import { apiFetch } from '@/lib/api-client'
 interface Project { id: number; name: string; slug: string }
 interface CommandRecord {
   projectId: number; state: 'draft'|'ready'|'active'|'paused'|'blocked'
-  policy: { autoRoute: boolean; allowReroute: boolean; fallbackBehavior: 'hold'|'manual'|'best_available'; allowedPlatoons: string[]; maxProjectConcurrent: number; maxPlatoonConcurrent: number; maxAgentConcurrent: number }
+  policy: { autoRoute: boolean; allowReroute: boolean; fallbackBehavior: 'hold'|'manual'|'best_available'; allowedPlatoons: string[]; maxProjectConcurrent: number; maxPlatoonConcurrent: number; maxAgentConcurrent: number; allowFreeLocalWithoutApproval?: boolean; allowFreeRemoteWithoutApproval?: boolean; allowPaidWithoutApproval?: boolean; maxApprovedEstimatedCost?: number|null; approvedProviders?: string[]; blockedProviders?: string[] }
   readiness: { required: number; ready: number; percent: number; status: string }
   activationBlockers: string[]; activatedAt: number|null
 }
@@ -36,11 +36,14 @@ interface ArsenalKnowledgeMission {
   escalation: { reason:string|null; category:string|null; attempts:number|null; summary:string|null; recommendedActions:string[] } | null
   delegation: { id:string|null; status:string|null; nativeSessionId:string|null; nativeRunId:string|null; attempt:number|null; runtimeType:string|null; platoonId:string|null; specialistName:string|null; errorMessage:string|null } | null
   resultSummary: { title:string|null; capabilities:string[]|null; source_claims:Array<{resource_id:string;accessed:boolean;usage?:string;notes?:string}>|null; limitations:string[]|null } | null
-}
-interface ArsenalKnowledgeState {
-  objective: { id:number; projectId:number; title:string; status:string; plan:Record<string,unknown>|null } | null
+}interface ArsenalKnowledgeState {
+  objective: { id: number; projectId: number; title: string; status: string; plan:Record<string,unknown>|null } | null
   missions: ArsenalKnowledgeMission[]
 }
+type ExecCostClass = 'FREE_LOCAL'|'FREE_REMOTE'|'PAID_KNOWN'|'PAID_ESTIMATED'|'UNKNOWN_COST'|'MANUAL_EXTERNAL'|'BLOCKED'
+interface ExecPlanMission { taskId:number; missionKey:string; title:string; status:string; assignedTo:string|null; platoon:string|null; specialist:string|null; runtimeType:string|null; provider:string|null; model:string|null; costClass:ExecCostClass; estimatedCost:number|null; costBasis:string; requiresApproval:boolean; dependencies:string[]; resources:Array<{resourceId:string;name:string;manualOnly?:boolean}>; runtimeAccess:string; warnings:string[] }
+interface ExecPlan { planId:string; objectiveId:number; projectId:number; workspaceId:number; createdAt:string; status:string; missions:ExecPlanMission[]; summary:{ freeMissions:number; paidMissions:number; unknownCostMissions:number; blockedMissions:number; approvalRequired:boolean; waves:string[][] }; fingerprint:string }
+interface ExecApproval { id:number; approvalId:string; objectiveId:number; projectId:number; workspaceId:number; approvedBy:string; approvedAt:number; approvedTaskIds:number[]; excludedTaskIds:number[]; fingerprint:string; maxAuthorizedAmount:number|null; expiresAt:number|null; createdAt:number }
 interface ArsenalState {
   registry: { resources: ArsenalResource[]; overlapGroups: Array<{capability:string;preferredId:string;candidateIds:string[]}>; summary:{ total:number; keep:number } } | null
   capabilityCoverage: ArsenalCoverage[]
@@ -79,6 +82,12 @@ export function ProjectCommandPanel() {
   const [pendingAction,setPendingAction]=useState<{resourceId:string;action:string}|null>(null)
   const [deepReviewBusy,setDeepReviewBusy]=useState(false)
   const [curationBusy,setCurationBusy]=useState(false)
+  const [execObjectiveId,setExecObjectiveId]=useState<number|null>(null)
+  const [execPlan,setExecPlan]=useState<ExecPlan|null>(null)
+  const [execApproval,setExecApproval]=useState<ExecApproval|null>(null)
+  const [execApprovalStatus,setExecApprovalStatus]=useState<'NONE'|'VALID'|'STALE'|'EXPIRED'>('NONE')
+  const [execSelected,setExecSelected]=useState<Set<number>>(new Set())
+  const [execBusy,setExecBusy]=useState(false)
   const arsenalNeedsManual=arsenal?.summary?.needsManual||0
   const curationNeedsManual=arsenal?.knowledge?.missions?.some(m=>m.escalation||m.state==='NEEDS_MANUAL')||false
   const [handoffFrom,setHandoffFrom]=useState('')
@@ -157,6 +166,42 @@ export function ProjectCommandPanel() {
     }catch(err){setActionError(err instanceof Error?err.message:'Arsenal action failed')}
     finally{setActionBusy(false)}
   },[loadArsenal])
+
+  const loadExecutionPreview=useCallback(async(objectiveId:number,notify=true)=>{
+    if(!projectId)return
+    setExecBusy(true);setActionError(null)
+    try{
+      const data=await apiFetch<{ok?:boolean;plan?:ExecPlan;approval?:ExecApproval|null;approvalStatus?:'NONE'|'VALID'|'STALE'|'EXPIRED';rowStatus?:string|null;error?:string}>(`/api/projects/${projectId}/agentos-execution?objective_id=${objectiveId}`)
+      if(data.ok&&data.plan){
+        setExecObjectiveId(objectiveId);setExecPlan(data.plan);setExecApproval(data.approval||null);setExecApprovalStatus(data.approvalStatus||'NONE')
+        if(notify&&data.plan.summary.approvalRequired){setActionMessage('Execution preview generated — cost-bearing missions wait for approval');setActionError(null)}
+        else if(notify){setActionMessage('Execution preview generated — all missions are free/local under policy');setActionError(null)}
+      }
+      else if(data.error)setActionError(data.error)
+    }catch(err){setActionError(err instanceof Error?err.message:'Failed to load execution preview')}
+    finally{setExecBusy(false)}
+  },[apiFetch,projectId])
+
+  const runExecAction=useCallback(async(action:'preview'|'refresh'|'approve'|'deny',objectiveId:number,extra:Record<string,unknown>={})=>{
+    if(!projectId)return
+    setExecBusy(true);setActionError(null);setActionMessage(null)
+    try{
+      const data=await apiFetch<{ok?:boolean;error?:string;message?:string;plan?:ExecPlan;approval?:ExecApproval|null;approvalStatus?:'NONE'|'VALID'|'STALE'|'EXPIRED';result?:{approved?:number[];partiallyApproved?:boolean;message?:string}}>(`/api/projects/${projectId}/agentos-execution`,{method:'POST',body:JSON.stringify({action,objectiveId,...extra})})
+      if(data.ok&&data.plan){
+        setExecObjectiveId(objectiveId);setExecPlan(data.plan);setExecApproval(data.approval||null);setExecApprovalStatus(data.approvalStatus||'NONE')
+        if(action==='approve'){
+          const approved=Number(data.result?.approved?.length||0)
+          setActionMessage(data.result?.message||`Approved ${approved} mission(s)`)
+          setExecSelected(new Set())
+          await loadContext(projectId)
+        }
+        else setActionMessage(data.plan.summary.approvalRequired?'Execution preview ready — approval required before dispatch':'Execution plan ready (free/local only — runs automatically)')
+      }
+      else if(data.ok&&action==='deny'){setActionMessage(data.message||'Execution plan denied');setExecApproval(null);setExecApprovalStatus('NONE')}
+      else if(data.error)setActionError(data.error)
+    }catch(err){setActionError(err instanceof Error?err.message:'Execution action failed')}
+    finally{setExecBusy(false)}
+  },[apiFetch,loadContext,projectId])
 
   const runKnowledgeAction=useCallback(async(payload:{action:'create'|'retry'|'reconcile';packId?:string})=>{
     setCurationBusy(true);setActionError(null);setActionMessage(null)
@@ -274,6 +319,15 @@ export function ProjectCommandPanel() {
               <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={command.policy.autoRoute} onChange={e=>setCommand({...command,policy:{...command.policy,autoRoute:e.target.checked}})}/>Auto-route</label>
               <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={command.policy.allowReroute} onChange={e=>setCommand({...command,policy:{...command.policy,allowReroute:e.target.checked}})}/>Allow reroute</label>
             </div>
+            <div className="rounded-md border border-border/40 bg-background/30 p-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground md:col-span-4">Execution authorization policy — free/local work may auto-run; paid/unknown work waits for your approval</div>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={command.policy.allowFreeLocalWithoutApproval!==false} onChange={e=>setCommand({...command,policy:{...command.policy,allowFreeLocalWithoutApproval:e.target.checked}})}/>Free-local auto-runs</label>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={command.policy.allowFreeRemoteWithoutApproval===true} onChange={e=>setCommand({...command,policy:{...command.policy,allowFreeRemoteWithoutApproval:e.target.checked}})}/>Free-remote auto-runs</label>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={command.policy.allowPaidWithoutApproval===true} onChange={e=>setCommand({...command,policy:{...command.policy,allowPaidWithoutApproval:e.target.checked}})}/>Allow paid without approval</label>
+              <label className="text-xs text-muted-foreground">Max approved estimate (blank = unlimited)<input type="number" min={0} step={0.01} value={command.policy.maxApprovedEstimatedCost??''} onChange={e=>setCommand({...command,policy:{...command.policy,maxApprovedEstimatedCost:e.target.value===''?null:Number(e.target.value)}})} className="mt-1 w-full rounded border border-border bg-background px-2 py-1.5"/></label>
+              <label className="text-xs text-muted-foreground md:col-span-2 xl:col-span-2">Blocked providers<input value={(command.policy.blockedProviders||[]).join(', ')} onChange={e=>setCommand({...command,policy:{...command.policy,blockedProviders:e.target.value.split(',').map(x=>x.trim().toLowerCase()).filter(Boolean)}})} className="mt-1 w-full rounded border border-border bg-background px-2 py-1.5" placeholder="provider slugs, blank = none blocked"/></label>
+              <label className="text-xs text-muted-foreground xl:col-span-2">Pre-approved providers<input value={(command.policy.approvedProviders||[]).join(', ')} onChange={e=>setCommand({...command,policy:{...command.policy,approvedProviders:e.target.value.split(',').map(x=>x.trim().toLowerCase()).filter(Boolean)}})} className="mt-1 w-full rounded border border-border bg-background px-2 py-1.5" placeholder="provider slugs bypass approval, blank = none"/></label>
+            </div>
             <div className="flex justify-end"><Button size="sm" disabled={saving} onClick={()=>void updateCommand(command.policy)}>{saving?'Saving…':'Save Routing Policy'}</Button></div>
           </section>
           <section className="grid gap-4 xl:grid-cols-2">
@@ -367,6 +421,52 @@ export function ProjectCommandPanel() {
                 {delegations.length===0&&<div className="text-sm text-muted-foreground">No AgentOS delegations dispatched yet.</div>}
               </div>
             </div>
+          </section>
+
+          <section className="rounded-xl border border-border bg-card p-4 space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div><p className="text-xs font-mono uppercase tracking-wider text-primary">Execution</p><h2 className="text-lg font-semibold mt-1">Preview, cost & authorization</h2><p className="text-xs text-muted-foreground mt-1">Preview exactly what AgentOS intends to run. FREE_LOCAL missions auto-run under policy; PAID/UNKNOWN missions stay safely assigned until you approve the exact plan snapshot.</p></div>
+              <div className="flex flex-wrap gap-2">
+                <select value={execObjectiveId??''} onChange={e=>{setExecObjectiveId(e.target.value?Number(e.target.value):null);setExecPlan(null);setExecApproval(null);setExecApprovalStatus('NONE');setExecSelected(new Set())}} className="rounded-md border border-border bg-background px-3 py-2 text-sm"><option value="">Objective…</option>{objectives.map(o=><option key={o.id} value={o.id}>{o.title} (#{o.id})</option>)}</select>
+                <Button size="sm" variant="outline" disabled={execBusy||!execObjectiveId} onClick={()=>void runExecAction('preview',execObjectiveId!)}>{execBusy?'Working…':'Generate Preview'}</Button>
+                <Button size="sm" variant="outline" disabled={execBusy||!execObjectiveId||!execPlan} onClick={()=>void runExecAction('refresh',execObjectiveId!)}>Refresh Plan</Button>
+                {execPlan&&<Button size="sm" disabled={execBusy||!execPlan.summary.approvalRequired} onClick={()=>void runExecAction('approve',execObjectiveId!,{approveTaskIds:'all-eligible'})}>Approve All Eligible</Button>}
+                {execPlan&&<Button size="sm" variant="outline" disabled={execBusy||execSelected.size===0} onClick={()=>void runExecAction('approve',execObjectiveId!,{approveTaskIds:[...execSelected]})}>Approve Selected ({execSelected.size})</Button>}
+                {execPlan&&<Button size="sm" variant="ghost" disabled={execBusy} onClick={()=>void runExecAction('deny',execObjectiveId!,{reason:'User held execution from Project Command'})}>Deny / Hold</Button>}
+              </div>
+            </div>
+            {execApprovalStatus==='STALE'&&<div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">⚠ Approval stale — routing changed since approval (different specialist/provider/model/runtime or new mission). Cost-bearing work stays held until you refresh the plan and approve again.</div>}
+            {execPlan&&execPlan.summary.approvalRequired&&execApprovalStatus==='NONE'&&<div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">⚠ This objective contains cost-bearing/unknown-cost missions — they will be held (never claimed, never dispatched) until you approve the exact plan below.</div>}
+            {!execPlan&&<div className="text-sm text-muted-foreground">Pick an objective and generate a preview to see per-mission cost classes, runtimes, and approval requirements. No dispatch happens from here — the scheduler enforces the same authorization.</div>}
+            {execPlan&&<>
+              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
+                <MiniMetric label="Free / local" value={execPlan.summary.freeMissions}/>
+                <MiniMetric label="Paid" value={execPlan.summary.paidMissions}/>
+                <MiniMetric label="Unknown cost" value={execPlan.summary.unknownCostMissions}/>
+                <MiniMetric label="Blocked" value={execPlan.summary.blockedMissions}/>
+                <div className="rounded-lg bg-secondary/40 p-3"><div className="text-xl font-semibold">{execPlan.summary.approvalRequired?'REQUIRED':'NONE'}</div><div className="text-[10px] uppercase tracking-wider text-muted-foreground">Approval</div></div>
+              </div>
+              <div className="max-h-[26rem] overflow-auto space-y-2 pr-1">
+                {execPlan.missions.map(mission=>{
+                  const tone=mission.costClass==='FREE_LOCAL'?'bg-emerald-500/15 text-emerald-400':mission.costClass==='FREE_REMOTE'?'bg-sky-500/15 text-sky-400':mission.costClass==='PAID_KNOWN'||mission.costClass==='PAID_ESTIMATED'?'bg-rose-500/15 text-rose-400':mission.costClass==='BLOCKED'?'bg-red-500/15 text-red-400':'bg-amber-500/15 text-amber-300'
+                  const approved=!!execApproval?.approvedTaskIds.includes(mission.taskId)
+                  return <div key={mission.taskId} className="rounded-lg border border-border/50 bg-background/40 p-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 flex-wrap"><span className="text-xs font-mono font-semibold text-primary">{mission.missionKey.toUpperCase()}</span><span className="text-sm font-medium">{mission.title}</span><span className="text-[10px] text-muted-foreground">task #{mission.taskId}</span></div>
+                      <div className="flex items-center gap-2">
+                        <span className={`text-[10px] font-mono uppercase rounded px-1.5 py-0.5 ${tone}`}>{mission.costClass}</span>
+                        {mission.requiresApproval&&<label className="flex items-center gap-1.5 text-[10px] text-muted-foreground cursor-pointer"><input type="checkbox" checked={execSelected.has(mission.taskId)||approved} disabled={approved} onChange={e=>{const next=new Set(execSelected);if(e.target.checked)next.add(mission.taskId);else next.delete(mission.taskId);setExecSelected(next)}}/>approve</label>}
+                        {approved&&<span className="text-[10px] text-emerald-400">✓ approved</span>}
+                      </div>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground mt-1.5">{mission.dependencies.length?`deps: ${mission.dependencies.map(d=>d.toUpperCase()).join(' ')} · `:''}{mission.runtimeAccess||'unassigned'} · specialist {mission.specialist||'—'}{mission.provider?` · ${mission.provider}${mission.model?`/${mission.model}`:''}`:''}{mission.estimatedCost!==null?` · est ${mission.estimatedCost}`:''}</div>
+                    {mission.resources.length>0&&<div className="text-[10px] text-muted-foreground mt-1">resources: {mission.resources.map(r=>r.resourceId+(r.manualOnly?' (manual)':'')).join(', ')}</div>}
+                    <div className="text-[10px] text-muted-foreground/70 mt-1">basis: {mission.costBasis}</div>
+                    {mission.warnings.length>0&&<div className="text-[10px] text-amber-400/80 mt-1">{mission.warnings.join(' · ')}</div>}
+                  </div>
+                })}
+              </div>
+            </>}
           </section>
 
           <section className="rounded-xl border border-border bg-card p-4 space-y-4">

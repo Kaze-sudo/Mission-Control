@@ -21,6 +21,8 @@ import { runGamutAgent } from './gamut-host'
 import { checkAgentOSDispatchGuard } from './project-command'
 import { promoteReadyObjectiveMissions, reconcileObjectiveStatuses } from './objective-planning'
 import { createDelegationForTask, getLatestDelegationForTask, updateDelegation } from './delegation-ledger'
+import { authorizeAgentOSTaskDispatch } from './execution-authorization'
+import { isAgentOSGatedTask, objectiveIdFromTaskMetadata } from './execution-planning'
 import type Database from 'better-sqlite3'
 
 const AGENT_DISPATCH_ACCEPT_TIMEOUT_MS = 60_000
@@ -1957,6 +1959,31 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         continue
       }
     }
+    // Execution authorization guard (Phase 9): FREE_LOCAL missions allowed by
+    // project policy pass through; PAID / UNKNOWN-cost AgentOS work requires a
+    // valid approval bound to the current execution-plan snapshot. Held tasks
+    // stay 'assigned' — they are never claimed and never reach a native
+    // runtime. The hold is activity-logged by the authorization module.
+    const executionAuth = authorizeAgentOSTaskDispatch({
+      id: task.id,
+      project_id: task.project_id ?? null,
+      workspace_id: task.workspace_id,
+      assigned_to: task.assigned_to || null,
+      metadata: task.metadata ?? null,
+    })
+    if (!executionAuth.allowed) {
+      logger.info({ taskId: task.id, reason: executionAuth.reason, costClass: executionAuth.costClass }, 'AgentOS dispatch held by execution authorization')
+      continue
+    }
+    if (isAgentOSGatedTask(task.metadata)) {
+      db_helpers.logActivity(
+        'execution_started', 'task', task.id, 'agentos',
+        `Execution authorized and starting for task ${task.id} (${executionAuth.costClass || 'free'})`,
+        { objective_id: objectiveIdFromTaskMetadata(task.metadata), cost_class: executionAuth.costClass || 'FREE_LOCAL', approval_id: executionAuth.approvalId },
+        task.workspace_id,
+      )
+    }
+
     // Atomically claim the task: only flip to in_progress if it is still
     // 'assigned'. If two dispatchers race (e.g. concurrent scheduler ticks or
     // multiple workers polling), exactly one UPDATE reports changes=1 and the

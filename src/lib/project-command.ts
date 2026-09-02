@@ -12,6 +12,13 @@ export interface ProjectRoutingPolicy {
   maxProjectConcurrent: number
   maxPlatoonConcurrent: number
   maxAgentConcurrent: number
+  // Execution authorization policy (Phase 6) — safe defaults preserve existing behavior.
+  allowFreeLocalWithoutApproval: boolean
+  allowFreeRemoteWithoutApproval: boolean
+  allowPaidWithoutApproval: boolean
+  maxApprovedEstimatedCost: number | null
+  approvedProviders: string[]
+  blockedProviders: string[]
 }
 
 export interface ProjectCommandRecord {
@@ -34,6 +41,12 @@ const DEFAULT_POLICY: ProjectRoutingPolicy = {
   maxProjectConcurrent: 3,
   maxPlatoonConcurrent: 2,
   maxAgentConcurrent: 1,
+  allowFreeLocalWithoutApproval: true,
+  allowFreeRemoteWithoutApproval: false,
+  allowPaidWithoutApproval: false,
+  maxApprovedEstimatedCost: null,
+  approvedProviders: [],
+  blockedProviders: [],
 }
 
 function parseList(raw: string | null | undefined): string[] {
@@ -87,6 +100,14 @@ export function getProjectCommand(projectId: number, workspaceId: number): Proje
       maxProjectConcurrent: clamp(row?.max_project_concurrent, DEFAULT_POLICY.maxProjectConcurrent, 50),
       maxPlatoonConcurrent: clamp(row?.max_platoon_concurrent, DEFAULT_POLICY.maxPlatoonConcurrent, 20),
       maxAgentConcurrent: clamp(row?.max_agent_concurrent, DEFAULT_POLICY.maxAgentConcurrent, 10),
+      allowFreeLocalWithoutApproval: row ? row.allow_free_local_without_approval !== 0 : true,
+      allowFreeRemoteWithoutApproval: row ? row.allow_free_remote_without_approval === 1 : false,
+      allowPaidWithoutApproval: row ? row.allow_paid_without_approval === 1 : false,
+      maxApprovedEstimatedCost: row?.max_approved_estimated_cost === null || row?.max_approved_estimated_cost === undefined
+        ? null
+        : Number(row.max_approved_estimated_cost),
+      approvedProviders: row ? parseList(row.approved_providers_json) : [],
+      blockedProviders: row ? parseList(row.blocked_providers_json) : [],
     },
     activatedAt: row?.activated_at ?? null,
     updatedBy: row?.updated_by || null,
@@ -113,6 +134,14 @@ export function updateProjectCommand(input: {
     maxProjectConcurrent: clamp(input.policy?.maxProjectConcurrent, current.policy.maxProjectConcurrent, 50),
     maxPlatoonConcurrent: clamp(input.policy?.maxPlatoonConcurrent, current.policy.maxPlatoonConcurrent, 20),
     maxAgentConcurrent: clamp(input.policy?.maxAgentConcurrent, current.policy.maxAgentConcurrent, 10),
+    allowFreeLocalWithoutApproval: input.policy?.allowFreeLocalWithoutApproval ?? current.policy.allowFreeLocalWithoutApproval ?? true,
+    allowFreeRemoteWithoutApproval: input.policy?.allowFreeRemoteWithoutApproval ?? current.policy.allowFreeRemoteWithoutApproval ?? false,
+    allowPaidWithoutApproval: input.policy?.allowPaidWithoutApproval ?? current.policy.allowPaidWithoutApproval ?? false,
+    maxApprovedEstimatedCost: input.policy?.maxApprovedEstimatedCost === undefined
+      ? (current.policy.maxApprovedEstimatedCost ?? null)
+      : input.policy.maxApprovedEstimatedCost,
+    approvedProviders: input.policy?.approvedProviders ? parseList(JSON.stringify(input.policy.approvedProviders)) : current.policy.approvedProviders || [],
+    blockedProviders: input.policy?.blockedProviders ? parseList(JSON.stringify(input.policy.blockedProviders)) : current.policy.blockedProviders || [],
   }
   if (nextState === 'active') {
     const force = analyzeProjectForce(input.projectId, input.workspaceId)
@@ -126,8 +155,11 @@ export function updateProjectCommand(input: {
     INSERT INTO agentos_project_command (
       project_id, workspace_id, state, auto_route, allow_reroute, fallback_behavior,
       allowed_platoons_json, max_project_concurrent, max_platoon_concurrent,
-      max_agent_concurrent, activated_at, updated_by, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      max_agent_concurrent, activated_at, updated_by, updated_at,
+      allow_free_local_without_approval, allow_free_remote_without_approval,
+      allow_paid_without_approval, max_approved_estimated_cost,
+      approved_providers_json, blocked_providers_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(project_id) DO UPDATE SET
       workspace_id = excluded.workspace_id, state = excluded.state,
       auto_route = excluded.auto_route, allow_reroute = excluded.allow_reroute,
@@ -137,13 +169,25 @@ export function updateProjectCommand(input: {
       max_platoon_concurrent = excluded.max_platoon_concurrent,
       max_agent_concurrent = excluded.max_agent_concurrent,
       activated_at = excluded.activated_at, updated_by = excluded.updated_by,
-      updated_at = excluded.updated_at
+      updated_at = excluded.updated_at,
+      allow_free_local_without_approval = excluded.allow_free_local_without_approval,
+      allow_free_remote_without_approval = excluded.allow_free_remote_without_approval,
+      allow_paid_without_approval = excluded.allow_paid_without_approval,
+      max_approved_estimated_cost = excluded.max_approved_estimated_cost,
+      approved_providers_json = excluded.approved_providers_json,
+      blocked_providers_json = excluded.blocked_providers_json
   `).run(
     input.projectId, input.workspaceId, nextState,
     nextPolicy.autoRoute ? 1 : 0, nextPolicy.allowReroute ? 1 : 0,
     nextPolicy.fallbackBehavior, JSON.stringify(nextPolicy.allowedPlatoons),
     nextPolicy.maxProjectConcurrent, nextPolicy.maxPlatoonConcurrent,
     nextPolicy.maxAgentConcurrent, activatedAt, input.actor || null, now,
+    nextPolicy.allowFreeLocalWithoutApproval ? 1 : 0,
+    nextPolicy.allowFreeRemoteWithoutApproval ? 1 : 0,
+    nextPolicy.allowPaidWithoutApproval ? 1 : 0,
+    nextPolicy.maxApprovedEstimatedCost,
+    JSON.stringify(nextPolicy.approvedProviders || []),
+    JSON.stringify(nextPolicy.blockedProviders || []),
   )
   return getProjectCommand(input.projectId, input.workspaceId)
 }

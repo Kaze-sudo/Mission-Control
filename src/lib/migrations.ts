@@ -1791,6 +1791,53 @@ const migrations: Migration[] = [
           ON agentos_objectives(project_id, workspace_id, status, created_at DESC);
       `)
     }
+  },
+  {
+    id: '065_agentos_execution_authorization',
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE agentos_project_command ADD COLUMN allow_free_local_without_approval INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE agentos_project_command ADD COLUMN allow_free_remote_without_approval INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE agentos_project_command ADD COLUMN allow_paid_without_approval INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE agentos_project_command ADD COLUMN max_approved_estimated_cost REAL;
+        ALTER TABLE agentos_project_command ADD COLUMN approved_providers_json TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE agentos_project_command ADD COLUMN blocked_providers_json TEXT NOT NULL DEFAULT '[]';
+        CREATE TABLE IF NOT EXISTS agentos_execution_plans (
+          objective_id INTEGER PRIMARY KEY,
+          project_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'PREVIEW'
+            CHECK(status IN ('PREVIEW','AWAITING_APPROVAL','APPROVED','RUNNING','COMPLETE','CANCELLED')),
+          plan_json TEXT NOT NULL DEFAULT '{}',
+          fingerprint TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (objective_id) REFERENCES agentos_objectives(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS agentos_execution_approvals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          approval_id TEXT NOT NULL UNIQUE,
+          objective_id INTEGER NOT NULL,
+          project_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          approved_by TEXT NOT NULL,
+          approved_at INTEGER NOT NULL,
+          approved_task_ids_json TEXT NOT NULL DEFAULT '[]',
+          excluded_task_ids_json TEXT NOT NULL DEFAULT '[]',
+          fingerprint TEXT NOT NULL,
+          max_authorized_amount REAL,
+          expires_at INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (objective_id) REFERENCES agentos_objectives(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_execution_approvals_objective
+          ON agentos_execution_approvals(objective_id, workspace_id, created_at DESC);
+      `)
+    }
   }
 ]
 

@@ -180,6 +180,42 @@ Queue → human approval. Retry/escalation reuses the generic foundation
 (repeated invalid output → `NEEDS_MANUAL`; failed dispatch on a missing source
 → immediate escalation; manual retry keeps the same task lineage).
 
+## Execution preview & authorization
+
+Before any cost-bearing native dispatch, AgentOS generates an **execution
+plan** (`src/lib/execution-planning.ts`) from the routed objective: every
+mission is classified independently into a reusable cost class —
+`FREE_LOCAL`, `FREE_REMOTE`, `PAID_KNOWN`, `PAID_ESTIMATED`, `UNKNOWN_COST`,
+`MANUAL_EXTERNAL`, or `BLOCKED` — using only runtime/provider metadata that
+actually exists in the roster/config (no invented dollar values:
+`UNKNOWN_COST` stays `UNKNOWN_COST` with `estimated_cost: null`).
+
+Plans carry a stable SHA-256 **fingerprint** over execution-relevant fields
+(task ids, dependencies, platoon/specialist, runtime/provider/model, attached
+resources, cost classes). Approval (`src/lib/execution-authorization.ts`) is
+durable, project-scoped, and applies **only to the exact plan snapshot**: if
+routing changes materially after approval the plan is flagged
+`APPROVAL_STALE` and a fresh preview is required before any cost-bearing work.
+Partial approval is supported (approve M1–M3 only; unapproved missions stay
+held, dependent missions stay blocked naturally).
+
+The authorization guard lives in the **real dispatch path**
+(`task-dispatch.ts`): after the project command guard and concurrency guard,
+free-local work allowed by project policy proceeds as before, while
+paid/unknown-cost work without a valid approval is held — the task stays
+`assigned`, never moves to `in_progress`, and an
+`agentos_execution_approval_held` activity event is logged. Per-project
+command policy gains optional execution fields (`allowFreeLocalWithoutApproval`
+and friends) with safe defaults that preserve existing behavior, and the
+Project Command **Execution Preview & Authorization** surface shows the plan,
+cost classes, per-mission runtime/provider/estimate, stale-approval warnings,
+and Approve All / Approve Selected / Hold actions.
+
+The knowledge suite objective is the primary fixture: M1–M5 route to
+free-local runtimes in the default configuration while unknown-cost missions
+wait for approval, and M6 stays blocked until every dependency is approved and
+complete. No paid or unknown-cost work is ever dispatched without approval.
+
 ## Deferred
 
 The five knowledge packs are now the real M1–M5 of the suite objective above;
