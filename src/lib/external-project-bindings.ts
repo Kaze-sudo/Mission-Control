@@ -50,20 +50,64 @@ function assertProject(db: ReturnType<typeof getDatabase>, projectId: number, wo
   if (!project) throw new Error('Project not found')
 }
 
-function routingAgentName(agent: GlobalRosterAgent): string {
+/**
+ * Stable Mission Control routing identity for a discovered roster agent.
+ *
+ * Keyed on platoon + slugified display name + a short hash of the external
+ * agent ID (never display name alone), so repeated registration/binding maps
+ * the same specialist to the same agents row without duplicates.
+ */
+export function agentosRoutingAgentName(agent: {
+  platoonId: string
+  name: string
+  id: string
+}): string {
   const platoon = agent.platoonId.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').slice(0, 24) || 'external'
   const name = agent.name.toLowerCase().replace(/[^a-z0-9_-]+/g, '-').slice(0, 36) || 'agent'
   const hash = createHash('sha256').update(agent.id).digest('hex').slice(0, 8)
   return `agentos:${platoon}:${name}:${hash}`
 }
 
-function ensureRoutingProxy(db: ReturnType<typeof getDatabase>, agent: GlobalRosterAgent, workspaceId: number): string {
+function routingAgentName(agent: GlobalRosterAgent): string {
+  return agentosRoutingAgentName(agent)
+}
+
+export function ensureRoutingProxy(db: ReturnType<typeof getDatabase>, agent: GlobalRosterAgent, workspaceId: number): string {
   const proxyName = routingAgentName(agent)
-  const config: Record<string, unknown> = {
+  const incoming: Record<string, unknown> = {
     agentos: { externalAgentId: agent.id, externalAgentName: agent.name, platoonId: agent.platoonId },
   }
-  if (agent.platoonId === 'openclaw') config.openclawId = agent.name
-  const status = agent.availability === 'available' ? 'online' : agent.availability
+  if (agent.platoonId === 'openclaw') incoming.openclawId = agent.name
+
+  // Same-identity re-registration (roster sync, re-bind) must NOT wipe richer
+  // metadata the sync layer stored on the row (truthful provider/model and
+  // free-local cost evidence). Merge when the prior row points at the same
+  // external agent; otherwise start from the fresh minimal config.
+  let config = incoming
+  const existing = db.prepare('SELECT config FROM agents WHERE name = ? AND workspace_id = ?')
+    .get(proxyName, workspaceId) as { config: string | null } | undefined
+  if (existing?.config) {
+    try {
+      const prior = JSON.parse(existing.config)
+      if (prior && typeof prior === 'object' && (prior as Record<string, unknown>).agentos
+        && typeof (prior as Record<string, unknown>).agentos === 'object') {
+        const priorAgentos = (prior as Record<string, unknown>).agentos as Record<string, unknown>
+        if (priorAgentos.externalAgentId === agent.id) {
+          config = { ...prior, ...incoming }
+          config.agentos = { ...priorAgentos, ...(incoming.agentos as Record<string, unknown>) }
+          if (incoming.openclawId !== undefined) config.openclawId = incoming.openclawId
+        }
+      }
+    } catch { /* malformed prior config — replace with minimal */ }
+  }
+
+  // Keep the exact row shape the roster sync writes, so repeated reconcile is a
+  // stable no-op: role sliced to the same limit, and availability mapped the
+  // same way (available/busy → online; error → error; else offline).
+  const role = (agent.role || 'External Agent').slice(0, 200) || 'External Agent'
+  const status = agent.availability === 'available' || agent.availability === 'busy'
+    ? 'online'
+    : agent.availability === 'error' ? 'error' : 'offline'
   db.prepare(`
     INSERT INTO agents (name, role, status, config, workspace_id, source, workspace_path, hidden, runtime_type, updated_at)
     VALUES (?, ?, ?, ?, ?, 'agentos-external', ?, 1, ?, unixepoch())
@@ -71,7 +115,7 @@ function ensureRoutingProxy(db: ReturnType<typeof getDatabase>, agent: GlobalRos
       role = excluded.role, status = excluded.status, config = excluded.config,
       source = excluded.source, workspace_path = excluded.workspace_path,
       hidden = 1, runtime_type = excluded.runtime_type, updated_at = unixepoch()
-  `).run(proxyName, agent.role || 'External Agent', status, JSON.stringify(config), workspaceId, agent.definitionPath, agent.platoonId)
+  `).run(proxyName, role, status, JSON.stringify(config), workspaceId, agent.definitionPath, agent.platoonId)
   return proxyName
 }
 

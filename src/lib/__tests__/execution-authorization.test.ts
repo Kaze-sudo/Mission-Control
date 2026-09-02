@@ -165,11 +165,23 @@ afterEach(() => {
 })
 
 describe('execution cost classification', () => {
-  it('classifies host-local runtimes FREE_LOCAL with evidence', () => {
-    const result = classifyExecutionCost({ runtimeType: 'gamut' })
-    expect(result.costClass).toBe('FREE_LOCAL')
-    expect(result.basis).toContain('locally on the host')
+  it('classifies host-orchestrated runtimes FREE_LOCAL only with free-local evidence', () => {
+    // A localhost Gamut/SuperAgent host does NOT imply free by itself — the
+    // agent may invoke a configured paid model. Evidence is required.
+    const unknown = classifyExecutionCost({ runtimeType: 'gamut' })
+    expect(unknown.costClass).toBe('UNKNOWN_COST')
+    expect(unknown.estimatedCost).toBeNull()
+    expect(classifyExecutionCost({ runtimeType: 'superagent-host' }).costClass).toBe('UNKNOWN_COST')
+
+    const freeLocal = classifyExecutionCost({ runtimeType: 'gamut', agentConfig: { agentos: { cost: { freeLocal: true } } } })
+    expect(freeLocal.costClass).toBe('FREE_LOCAL')
+    expect(freeLocal.basis).toContain('locally on the host')
+    // Declared non-local provider on a host runtime is treated as paid.
+    const paid = classifyExecutionCost({ runtimeType: 'gamut', provider: 'openai', model: 'gpt-4o' })
+    expect(paid.costClass).toBe('PAID_ESTIMATED')
+    // MC-native local tokens stay FREE_LOCAL unconditionally.
     expect(classifyExecutionCost({ runtimeType: 'builtin' }).costClass).toBe('FREE_LOCAL')
+    expect(classifyExecutionCost({ runtimeType: 'local' }).costClass).toBe('FREE_LOCAL')
   })
 
   it('keeps unverifiable runtimes UNKNOWN_COST — never guesses a price', () => {
@@ -221,8 +233,8 @@ describe('execution plan + fingerprint', () => {
     return { objectiveId: suite.objectiveId, projectId: suite.projectId, tasks: Object.fromEntries(suite.missions.map(m => [m.key, m.taskId])) }
   }
 
-  it('generates a knowledge-suite preview: M1–M5 free-local, M6 unknown-cost, M6 blocked until approved', () => {
-    addAgent('gamut-curator', 'gamut')
+  it('generates a knowledge-suite preview: M1–M5 free-local (with evidence), M6 unknown-cost, M6 blocked until approved', () => {
+    addAgent('gamut-curator', 'gamut', { agentos: { cost: { freeLocal: true } } })
     addAgent('hermes-reviewer', 'hermes')
     const { objectiveId, projectId, tasks } = suiteObjective()
     commandRow(projectId)
@@ -306,7 +318,7 @@ describe('approval + dispatch authorization', () => {
   }
 
   it('free-local missions dispatch without approval; hermes mission is held until approved', () => {
-    addAgent('gamut-free', 'gamut')
+    addAgent('gamut-free', 'gamut', { agentos: { cost: { freeLocal: true } } })
     addAgent('hermes-cost', 'hermes')
     const { objectiveId, projectId, tasks } = suiteObjective()
     commandRow(projectId)
@@ -396,7 +408,7 @@ describe('approval + dispatch authorization', () => {
   })
 
   it('policy: disabling free-local auto-approval holds even gamut missions', () => {
-    addAgent('gamut-free', 'gamut')
+    addAgent('gamut-free', 'gamut', { agentos: { cost: { freeLocal: true } } })
     const { objectiveId, projectId, tasks } = suiteObjective()
     state.db!.prepare(`
       INSERT INTO agentos_project_command (project_id, workspace_id, state, allow_free_local_without_approval)

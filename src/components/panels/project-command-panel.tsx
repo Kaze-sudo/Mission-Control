@@ -12,6 +12,8 @@ interface CommandRecord {
   activationBlockers: string[]; activatedAt: number|null
 }
 interface Binding { id:number; externalAgentId:string; agentName:string; platoonId:string; role:string; availability:string }
+interface RosterAgent { externalAgentId:string; name:string; platoonId:string; availability:string; registered:boolean; routingAgentName:string|null; runtimeType:string|null; provider:string|null; model:string|null; costClass:string|null; blocker:string|null }
+interface RosterSummary { discovered:number; registered:number; dispatchable:number; unavailable:number; classifications:Record<string,number> }
 interface Task { id:number; title:string; status:string; priority:string; assigned_to:string|null; metadata?:Record<string,unknown>; ticket_ref?:string }
 interface Handoff { id:number; fromTaskId:number; toTaskId:number|null; toExternalAgentId:string|null; toPlatoonId:string|null; requestedCapabilities:string[]; instructions:string|null; status:string; createdAt:number }
 interface ForcePlan { readiness:{required:number;ready:number;percent:number;status:string}; missingCapabilities:string[]; blockedCapabilities:string[]; coverage:Array<{capability:string;covered:boolean;ready:boolean}>; resourceRecommendations?:Array<{id:string;name:string;path:string;type:string;score:number;primaryCapability:string;capabilities:string[]}> }
@@ -88,6 +90,9 @@ export function ProjectCommandPanel() {
   const [execApprovalStatus,setExecApprovalStatus]=useState<'NONE'|'VALID'|'STALE'|'EXPIRED'>('NONE')
   const [execSelected,setExecSelected]=useState<Set<number>>(new Set())
   const [execBusy,setExecBusy]=useState(false)
+  const [roster,setRoster]=useState<RosterAgent[]>([])
+  const [rosterSummary,setRosterSummary]=useState<RosterSummary|null>(null)
+  const [rosterBusy,setRosterBusy]=useState(false)
   const arsenalNeedsManual=arsenal?.summary?.needsManual||0
   const curationNeedsManual=arsenal?.knowledge?.missions?.some(m=>m.escalation||m.state==='NEEDS_MANUAL')||false
   const [handoffFrom,setHandoffFrom]=useState('')
@@ -103,10 +108,10 @@ export function ProjectCommandPanel() {
   },[])
 
   const loadContext=useCallback(async(id:number|null)=>{
-    if(!id){setCommand(null);setBindings([]);setTasks([]);setHandoffs([]);setForce(null);setObjectives([]);setDelegations([]);return}
+    if(!id){setCommand(null);setBindings([]);setTasks([]);setHandoffs([]);setForce(null);setObjectives([]);setDelegations([]);setRoster([]);setRosterSummary(null);return}
     setLoading(true);setError(null)
     try{
-      const [c,b,t,h,f,o,d]=await Promise.all([
+      const [c,b,t,h,f,o,d,r]=await Promise.all([
         apiFetch<{command:CommandRecord}>(`/api/projects/${id}/agentos-command`),
         apiFetch<{bindings?:Binding[]}>(`/api/projects/${id}/external-agents`),
         apiFetch<{tasks?:Task[]}>(`/api/tasks?project_id=${id}&limit=200`),
@@ -114,14 +119,25 @@ export function ProjectCommandPanel() {
         apiFetch<ForcePlan>(`/api/projects/${id}/agentos-force-plan`),
         apiFetch<{objectives?:Objective[]}>(`/api/projects/${id}/agentos-objectives`),
         apiFetch<{delegations?:Delegation[]}>(`/api/projects/${id}/agentos-delegations`),
+        apiFetch<{agents?:RosterAgent[];summary?:RosterSummary}>(`/api/agentos/roster`),
       ])
-      setCommand(c.command);setBindings(b.bindings||[]);setTasks(t.tasks||[]);setHandoffs(h.handoffs||[]);setForce(f);setObjectives(o.objectives||[]);setDelegations(d.delegations||[])
+      setCommand(c.command);setBindings(b.bindings||[]);setTasks(t.tasks||[]);setHandoffs(h.handoffs||[]);setForce(f);setObjectives(o.objectives||[]);setDelegations(d.delegations||[]);setRoster(r.agents||[]);setRosterSummary(r.summary||null)
     }catch(err){setError(err instanceof Error?err.message:'Failed to load project command view')}
     finally{setLoading(false)}
   },[])
 
   useEffect(()=>{void loadProjects()},[loadProjects])
   useEffect(()=>{void loadContext(projectId)},[loadContext,projectId])
+
+  const reconcileRoster=useCallback(async()=>{
+    if(!projectId)return;setRosterBusy(true);setError(null)
+    try{
+      const result=await apiFetch<{report:{agents?:RosterAgent[]};summary:RosterSummary}>(`/api/agentos/roster`,{method:'POST',body:JSON.stringify({action:'reconcile',projectId})})
+      setRoster(result.report.agents||[]);setRosterSummary(result.summary)
+      await loadContext(projectId)
+    }catch(err){setError(err instanceof Error?err.message:'Failed to reconcile roster')}
+    finally{setRosterBusy(false)}
+  },[loadContext,projectId])
 
   const updateCommand=useCallback(async(patch:Record<string,unknown>)=>{
     if(!projectId)return;setSaving(true);setError(null)
@@ -335,6 +351,21 @@ export function ProjectCommandPanel() {
               <div className="flex items-center justify-between"><div><p className="text-xs font-mono uppercase tracking-wider text-primary">Force</p><h2 className="text-lg font-semibold mt-1">Active team</h2></div><span className="text-xs text-muted-foreground">{force?.readiness.status||'unknown'}</span></div>
               <div className="mt-3 space-y-2">
                 {bindings.length===0?<div className="text-sm text-muted-foreground">No project agents bound.</div>:bindings.map(b=><div key={b.id} className="flex items-center justify-between rounded-lg border border-border/50 bg-background/40 px-3 py-2"><div><div className="text-sm font-medium">{b.agentName}</div><div className="text-[10px] text-muted-foreground">{b.platoonId} · {b.role}</div></div><span className="text-[10px] uppercase">{b.availability}</span></div>)}
+              </div>
+              <div className="mt-3 border-t border-border/50 pt-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">Discovered roster · {rosterSummary?`${rosterSummary.dispatchable} dispatchable / ${rosterSummary.unavailable} unavailable of ${rosterSummary.discovered}`:'loading…'}</div>
+                  <Button size="sm" variant="outline" disabled={rosterBusy} onClick={()=>void reconcileRoster()}>{rosterBusy?'Syncing…':'Reconcile & Bind Available'}</Button>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {rosterSummary&&rosterSummary.classifications.FREE_LOCAL>0&&<span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[9px] uppercase text-emerald-400">{rosterSummary.classifications.FREE_LOCAL} free-local</span>}
+                  {rosterSummary&&rosterSummary.classifications.PAID_ESTIMATED>0&&<span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] uppercase text-amber-300">{rosterSummary.classifications.PAID_ESTIMATED} paid-est.</span>}
+                  {rosterSummary&&rosterSummary.classifications.UNKNOWN_COST>0&&<span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[9px] uppercase text-amber-300">{rosterSummary.classifications.UNKNOWN_COST} unknown-cost</span>}
+                  {rosterSummary&&rosterSummary.classifications.BLOCKED>0&&<span className="rounded bg-rose-500/10 px-1.5 py-0.5 text-[9px] uppercase text-rose-400">{rosterSummary.classifications.BLOCKED} blocked</span>}
+                </div>
+                <div className="mt-2 max-h-64 space-y-1 overflow-auto">
+                  {roster.length===0?<div className="text-xs text-muted-foreground">No external specialists discovered (Gamut/Hermes/Codex platoons).</div>:roster.map(a=><div key={a.externalAgentId} className="flex items-center justify-between gap-2 rounded border border-border/40 bg-background/30 px-2 py-1.5"><div className="min-w-0"><div className="truncate text-xs font-medium" title={a.name}>{a.name}</div><div className="truncate text-[10px] text-muted-foreground">{a.platoonId} · {a.registered?'registered':'discovered only'} · {a.costClass||'unclassified'}{a.model?` · ${a.model}`:''}</div></div><div className="flex shrink-0 items-center gap-2"><span className={`text-[9px] uppercase ${a.availability==='available'?'text-emerald-400':a.availability==='busy'?'text-amber-300':'text-muted-foreground'}`} title={a.blocker||a.availability}>{a.availability}</span><span className={`text-[10px] ${a.registered?'text-primary':'text-muted-foreground'}`} title={a.registered?'Live roster agent':'Not registered — run Reconcile'}>{(a.registered?'●':'○')}</span></div></div>)}
+                </div>
               </div>
               {force&&(force.missingCapabilities.length>0||force.blockedCapabilities.length>0)&&<div className="mt-3 text-xs text-muted-foreground">{force.missingCapabilities.length>0&&<div>Gaps: {force.missingCapabilities.join(', ')}</div>}{force.blockedCapabilities.length>0&&<div>Blocked: {force.blockedCapabilities.join(', ')}</div>}</div>}
             </div>

@@ -216,6 +216,49 @@ free-local runtimes in the default configuration while unknown-cost missions
 wait for approval, and M6 stays blocked until every dependency is approved and
 complete. No paid or unknown-cost work is ever dispatched without approval.
 
+## Live roster registration bridge
+
+AgentOS discovers Gamut/Hermes/Codex specialists through the platoon-commander
+adapters, but the normal dispatcher joins tasks against `agents` rows — so
+before this layer the discovered specialists were visible yet never
+dispatchable (`SELECT COUNT(*) FROM agents` stayed 0).
+
+`src/lib/agent-roster-sync.ts` closes that gap with an idempotent,
+workspace-scoped **registration** bridge:
+
+- **Stable identity**: one `agentos-external` row per discovered specialist,
+  named `agentos:{platoon}:{slugified-name}:{sha256(external-id)[:8]}` — never
+  display-name alone, so renames do not duplicate and re-sync maps back to the
+  same row. Repeated sync is a true no-op (delta-guarded; liveness is
+  maintained by refreshing `last_seen` on the sync cadence).
+- **Availability**: available/busy → `online`, error → `error`, offline →
+  `offline`; rows are **never deleted** when a runtime is temporarily down.
+- **Truthful cost metadata**: `provider`/`model`/free-local evidence are stored
+  only when actually known. Because of this, the execution classifier now
+  treats host-orchestrated runtimes (`gamut`, `superagent-host`) as
+  **evidence-required**: no declared model/provider and no explicit
+  free-local evidence ⇒ `UNKNOWN_COST` (a localhost host API never implies
+  FREE_LOCAL); declared non-local provider ⇒ `PAID_ESTIMATED`; explicit
+  free-local evidence ⇒ `FREE_LOCAL`. MC-native tokens (`local`, `builtin`,
+  `filesystem`, `mission-control`) stay unconditional FREE_LOCAL.
+- **Binding**: `syncAgentRoster({ workspaceId, projectId })` (API:
+  `POST /api/agentos/roster`; UI: **Reconcile & Bind Available** in Project
+  Command) registers available specialists and ensures the project's binding
+  rows exist so capability routing can select them. Re-binding the same
+  identity preserves the richer config the sync wrote (no metadata clobber).
+  `GET /api/agentos/roster` is read-only (registration status + cost class
+  per specialist).
+- A registration-only `agentos_roster_sync` scheduler job keeps rows fresh
+  every tick.
+
+Live reconcile on this machine registered the real Gamut platoon (18
+specialists, incl. Tactical Battles & Encounter Designer, Combat Gameplay
+Engineer, Enemy AI & Boss Engineer, QA Playtest & Release Verification Lead)
+and 7 Hermes profiles into the ops-project roster with bindings — all
+classify `UNKNOWN_COST` (no model/provider evidence in the definitions), so
+they can never dispatch without an explicit approval, and none ever will
+under the default policy.
+
 ## Deferred
 
 The five knowledge packs are now the real M1–M5 of the suite objective above;

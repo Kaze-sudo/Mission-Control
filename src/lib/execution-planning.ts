@@ -67,8 +67,26 @@ export const EXECUTION_POLICY_COLUMNS = {
   blockedProviders: 'blocked_providers_json',
 } as const
 
-/** Explicit local/free runtime tokens (host-local execution, no paid model). */
-const FREE_LOCAL_RUNTIMES = new Set(['gamut', 'superagent-host', 'local', 'builtin', 'filesystem', 'mission-control'])
+/**
+ * Unconditional local/free runtime tokens — MC-native execution with no
+ * external model: a direct local LLM endpoint, builtin helpers, or file
+ * system/registry work. These never need free-local evidence.
+ */
+const FREE_LOCAL_RUNTIMES = new Set(['local', 'builtin', 'filesystem', 'mission-control'])
+
+/**
+ * Host-orchestrated local runtimes — the desktop host runs the agent, but the
+ * agent may invoke a configured remote/paid model. FREE_LOCAL only with
+ * explicit free evidence (provider 'local' or agentos.cost.freeLocal); a
+ * declared non-local provider is PAID_ESTIMATED; no evidence is UNKNOWN_COST.
+ * A localhost host API never implies free by itself.
+ */
+const HOST_LOCAL_RUNTIMES = new Set(['gamut', 'superagent-host'])
+
+const HOST_LOCAL_EVIDENCE_HINT: Record<string, string> = {
+  gamut: 'Gamut host agent model/provider not declared — it may invoke a configured paid model',
+  'superagent-host': 'SuperAgent host agent model/provider not declared — it may invoke a configured paid model',
+}
 
 /** Runtime tokens whose executor is an external orchestrator we cannot price. */
 const UNKNOWN_RUNTIME_HINT: Record<string, string> = {
@@ -148,11 +166,38 @@ export function classifyExecutionCost(
   const model = meta.model ?? asString(config.model) ?? null
 
   if (FREE_LOCAL_RUNTIMES.has(runtime)) {
-    const basis = provider && provider !== 'local'
-      ? `Runtime ${runtime} is host-local but declares provider ${provider}`
-      : `Runtime ${runtime} executes locally on the host (no paid provider)`
-    if (provider && provider !== 'local') warnings.push('Free-local runtime declares a non-local provider — confirm it is not billed')
+    const basis = `Runtime ${runtime} executes locally on the host (no paid provider)`
     return { costClass: 'FREE_LOCAL', basis, provider, model, estimatedCost: null, warnings }
+  }
+
+  if (HOST_LOCAL_RUNTIMES.has(runtime)) {
+    const freeEvidence =
+      provider === 'local'
+      || (config.agentos && typeof config.agentos === 'object'
+        && (config.agentos as Record<string, unknown>).cost
+        && typeof (config.agentos as Record<string, unknown>).cost === 'object'
+        && ((config.agentos as Record<string, unknown>).cost as Record<string, unknown>).freeLocal === true)
+    if (freeEvidence) {
+      return {
+        costClass: 'FREE_LOCAL',
+        basis: `Runtime ${runtime} executes locally on the host with declared free-local evidence (no paid provider)`,
+        provider, model, estimatedCost: null, warnings,
+      }
+    }
+    if (provider && provider !== 'local') {
+      return {
+        costClass: 'PAID_ESTIMATED',
+        basis: `Host runtime ${runtime} declares provider ${provider}${model ? ` / model ${model}` : ''}; no pricing metadata — treated as paid, estimate unknown`,
+        provider, model, estimatedCost: null, warnings: [],
+      }
+    }
+    const hint = HOST_LOCAL_EVIDENCE_HINT[runtime]
+    warnings.push(hint || `Host runtime ${runtime} has no free-local evidence`)
+    return {
+      costClass: 'UNKNOWN_COST',
+      basis: hint || `No reliable pricing metadata available for host runtime ${runtime}`,
+      provider: null, model: null, estimatedCost: null, warnings,
+    }
   }
 
   const estimate = typeof meta.estimatedCost === 'number' && Number.isFinite(meta.estimatedCost) ? meta.estimatedCost : null
