@@ -142,9 +142,48 @@ routed to the most qualified reviewer at the time from the global roster
 (capability tags + specialist affinity). Freebuff is one available reviewer,
 not the permanent one.
 
-## Deferred (Phase 12)
+## Knowledge curation (Company Commander proof)
 
-The five knowledge packs (`tactical-encounter-design-patterns`,
-`deployment-and-spawn-schemas`, `terrain-and-movement-models`,
-`scenario-objective-patterns`, `tactical-ai-reference`) remain proposed backlog
-items for future AgentOS-delegated knowledge-curation missions. Not built.
+`knowledge-curation` is a first-class AgentOS delegation capability
+(roster keyword inference, specialist affinity, mission-intent rules). The
+AI Arsenal **Knowledge Curation** tab plans a real internal-ops objective —
+**Build Tactical Encounter Knowledge Pack Suite** — through the normal
+objective path:
+
+- M1–M5 curate the five tactical packs independently (parallel-ready);
+- M6 **Validate Tactical Knowledge Pack Suite** depends on M1–M5 and stays
+  `backlog` until the standard dependency promotion releases it;
+- every mission is a normal objective mission task with explicit
+  `knowledge-curation` + domain capability requirements routed through the
+  project specialist selector and tracked in the delegation ledger;
+- **source policy**: Wesnoth attaches automatically (approved auto-selectable
+  `tactical-encounters` provider); OXCE attaches only as an explicitly
+  selected manual/reference source and keeps its `manual_only` flag — the
+  global gate is never weakened and REJECT resources can never attach.
+
+Each pack result is validated against `agentos-knowledge-pack-v1` before
+acceptance: pack/schema identity, source-claim policy (approved ids only,
+manual-only never preferred, no `accessed` claim on an inaccessible path),
+authoritative factual limits (no "Wesnoth cover/elevation/LOS", no "OXCE
+automatic runtime", no "boardgame.io tactical provider"), and a verbatim-source
+ratio guard. Validated packs are staged under
+`00_INBOX/generated-knowledge/` — no final files are written before M6.
+M6 (`agentos-knowledge-validation-v1`) is the only finalization gate: a PASS
+verdict with all five packs COMPLETE writes the duplicate-safe final suite to
+`Knowledge Packets/Tactical Encounters/` plus `manifest.json` (suite/objective/
+task/delegation ids, source resource ids, validation result).
+
+Nothing auto-promotes. AgentOS never runs the vault scanner — the finalized
+staging container is scan-visible, so the next `node D:/AI/_CATALOG/scan.mjs`
+registers the generated suite as a NEW resource that must pass NEW → Review
+Queue → human approval. Retry/escalation reuses the generic foundation
+(repeated invalid output → `NEEDS_MANUAL`; failed dispatch on a missing source
+→ immediate escalation; manual retry keeps the same task lineage).
+
+## Deferred
+
+The five knowledge packs are now the real M1–M5 of the suite objective above;
+they are built only through that AgentOS workflow, never by hand. Live
+finalization writes require an actual AgentOS run with dispatch; the module is
+exercised end-to-end in tests against temporary vaults (including a real
+root-patched run of `scan.mjs` proving NEW discovery).

@@ -91,6 +91,7 @@ const CAPABILITY_KEYWORDS: Array<[RegExp, string]> = [
   [/playtest|release verification|quality assurance|regression|acceptance/i, 'qa-release'],
   [/estimating|takeoff|pricebook|xactimate|freebuff|material quantities/i, 'construction-estimating'],
   [/deep review|resource review|arsenal|registry audit|resource audit|curator/i, 'resource-deep-review'],
+  [/knowledge curation|knowledge pack|knowledge base pack|curate knowledge|curate reference|technical writing|reference material|pack suite/i, 'knowledge-curation'],
   [/jobs|clients|schedules|crews|subcontractors|suppliers|job packets/i, 'construction-operations'],
   [/document|docs|writer/i, 'documentation'],
 ]

@@ -39,6 +39,7 @@ const RULES: IntentRule[] = [
   { capability: 'construction-estimating', title: [/estimating/i, /estimate/i, /takeoff/i, /pricebook/i, /xactimate/i, /freebuff/i, /material quantit/i] },
   { capability: 'construction-operations', title: [/job packet/i, /subcontractor/i, /supplier/i, /crew schedule/i, /client workflow/i, /construction operations/i] },
   { capability: 'resource-deep-review', title: [/deep review/i, /resource review/i, /registry audit/i, /arsenal review/i] },
+  { capability: 'knowledge-curation', title: [/knowledge curation/i, /knowledge pack/i, /curate/i, /reference pack/i, /knowledge base/i] },
 ]
 
 for (const rule of RULES) {

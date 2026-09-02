@@ -31,6 +31,16 @@ interface ArsenalReviewMissionTrace {
   delegation: { id:string|null; status:string|null; nativeSessionId:string|null; nativeRunId:string|null; attempt:number|null; runtimeType:string|null; platoonId:string|null; specialistName:string|null; errorMessage:string|null } | null
 }
 interface ArsenalPromotion { promotionBatchId:string; approvedAt:string; approvedResources:string[]; previousState:Record<string,unknown>|null; newState:Record<string,unknown>|null; capabilitiesAdded:string[]; overlapChanges:string[]; warnings:string[]; reviewerDecision:string|null }
+interface ArsenalKnowledgeMission {
+  taskId:number; packId:string; missionKey:string; file:string; schema:string; title:string; status:string; assignedTo:string|null; projectId:number|null; objectiveId:number|null; dependsOnKeys:string[]; createdAt:number; updatedAt:number; state:string|null; stagedPath:string|null; invalidAttempts:number
+  escalation: { reason:string|null; category:string|null; attempts:number|null; summary:string|null; recommendedActions:string[] } | null
+  delegation: { id:string|null; status:string|null; nativeSessionId:string|null; nativeRunId:string|null; attempt:number|null; runtimeType:string|null; platoonId:string|null; specialistName:string|null; errorMessage:string|null } | null
+  resultSummary: { title:string|null; capabilities:string[]|null; source_claims:Array<{resource_id:string;accessed:boolean;usage?:string;notes?:string}>|null; limitations:string[]|null } | null
+}
+interface ArsenalKnowledgeState {
+  objective: { id:number; projectId:number; title:string; status:string; plan:Record<string,unknown>|null } | null
+  missions: ArsenalKnowledgeMission[]
+}
 interface ArsenalState {
   registry: { resources: ArsenalResource[]; overlapGroups: Array<{capability:string;preferredId:string;candidateIds:string[]}>; summary:{ total:number; keep:number } } | null
   capabilityCoverage: ArsenalCoverage[]
@@ -39,9 +49,10 @@ interface ArsenalState {
   promotionHistory: ArsenalPromotion[]
   knowledgePackBacklog: Array<{ id:string; name:string; status:string }>
   missions?: ArsenalReviewMissionTrace[]
+  knowledge?: ArsenalKnowledgeState | null
   summary?: { resources:number; capabilities:number; filled:number; partiallyCovered:number; open:number; pendingReviews:number; needsManual:number }
 }
-type ArsenalTab = 'recommendations'|'registry'|'coverage'|'changes'|'reviews'|'history'|'overlaps'|'risks'|'backlog'
+type ArsenalTab = 'recommendations'|'registry'|'coverage'|'changes'|'reviews'|'history'|'overlaps'|'risks'|'backlog'|'curation'
 
 const STATES: CommandRecord['state'][] = ['draft','ready','active','paused','blocked']
 
@@ -67,7 +78,9 @@ export function ProjectCommandPanel() {
   const [actionMessage,setActionMessage]=useState<string|null>(null)
   const [pendingAction,setPendingAction]=useState<{resourceId:string;action:string}|null>(null)
   const [deepReviewBusy,setDeepReviewBusy]=useState(false)
+  const [curationBusy,setCurationBusy]=useState(false)
   const arsenalNeedsManual=arsenal?.summary?.needsManual||0
+  const curationNeedsManual=arsenal?.knowledge?.missions?.some(m=>m.escalation||m.state==='NEEDS_MANUAL')||false
   const [handoffFrom,setHandoffFrom]=useState('')
   const [handoffCaps,setHandoffCaps]=useState('')
   const [handoffInstructions,setHandoffInstructions]=useState('')
@@ -118,6 +131,10 @@ export function ProjectCommandPanel() {
       ])
       setArsenal({registry:data.registry,capabilityCoverage:data.capabilityCoverage||[],changes:data.changes||null,reviewQueue:data.reviewQueue||[],promotionHistory:data.promotionHistory||[],knowledgePackBacklog:data.knowledgePackBacklog||[],missions:missions.missions||[],summary:data.summary})
     }catch{/* Arsenal companion view is non-fatal */}
+    try{
+      const knowledge=await apiFetch<{state?:ArsenalKnowledgeState}>(`/api/agentos/resources/knowledge`)
+      setArsenal(prev=>prev?{...prev,knowledge:knowledge.state||null}:prev)
+    }catch{/* Knowledge curation view is non-fatal */}
   },[])
   useEffect(()=>{void loadArsenal()},[loadArsenal])
 
@@ -140,6 +157,23 @@ export function ProjectCommandPanel() {
     }catch(err){setActionError(err instanceof Error?err.message:'Arsenal action failed')}
     finally{setActionBusy(false)}
   },[loadArsenal])
+
+  const runKnowledgeAction=useCallback(async(payload:{action:'create'|'retry'|'reconcile';packId?:string})=>{
+    setCurationBusy(true);setActionError(null);setActionMessage(null)
+    try{
+      const response=await apiFetch<{ok?:boolean;suite?:{objectiveId:number};mission?:{taskId:number};error?:string}>(`/api/agentos/resources/knowledge`,{method:'POST',body:JSON.stringify({...payload,projectId})})
+      if(response.ok){
+        setActionMessage(payload.action==='create'
+          ? `Knowledge suite objective #${response.suite?.objectiveId} planned (M1–M6; M6 gates on M1–M5)`
+          : payload.action==='retry'
+            ? `Knowledge mission ${payload.packId} retried (task #${response.mission?.taskId})`
+            : 'Knowledge curation reconcile complete')
+        setPendingAction(null);await loadArsenal()
+      }
+      else setActionError(response.error||'Knowledge-curation action failed')
+    }catch(err){setActionError(err instanceof Error?err.message:'Knowledge-curation action failed')}
+    finally{setCurationBusy(false)}
+  },[loadArsenal,projectId])
 
   const runDeepReviewAction=useCallback(async(payload:{action:'create'|'retry';reviewId:string;reviewer?:string})=>{
     setDeepReviewBusy(true);setActionError(null);setActionMessage(null)
@@ -270,7 +304,7 @@ export function ProjectCommandPanel() {
               </div>
             </div>
             <div className="flex flex-wrap gap-1.5">
-              {([['recommendations','Recommendations'],['registry','Registry'],['coverage','Capability Coverage'],['changes','New / Changed'],['reviews','Review Queue'],['history','Promotion History'],['overlaps','Duplicates / Supersessions'],['risks','Runtime Risks'],['backlog','Backlog']] as Array<[ArsenalTab,string]>).map(([tab,label])=><button key={tab} onClick={()=>{setArsenalTab(tab);setActionError(null);setActionMessage(null)}} className={`rounded-md px-2.5 py-1 text-xs font-medium ${arsenalTab===tab?'bg-primary text-primary-foreground':'bg-secondary/50 text-muted-foreground hover:bg-secondary'}`}>{label}</button>)}
+              {([['recommendations','Recommendations'],['registry','Registry'],['coverage','Capability Coverage'],['changes','New / Changed'],['reviews','Review Queue'],['history','Promotion History'],['overlaps','Duplicates / Supersessions'],['risks','Runtime Risks'],['backlog','Backlog'],['curation','Knowledge Curation']] as Array<[ArsenalTab,string]>).map(([tab,label])=><button key={tab} onClick={()=>{setArsenalTab(tab);setActionError(null);setActionMessage(null)}} className={`rounded-md px-2.5 py-1 text-xs font-medium ${arsenalTab===tab?'bg-primary text-primary-foreground':'bg-secondary/50 text-muted-foreground hover:bg-secondary'}`}>{label}</button>)}
             </div>
             {actionError&&<div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">{actionError}</div>}
             {actionMessage&&<div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-400">{actionMessage}</div>}
@@ -284,6 +318,7 @@ export function ProjectCommandPanel() {
             {arsenalTab==='overlaps'&&<ArsenalOverlaps registry={arsenal?.registry||null}/>}
             {arsenalTab==='risks'&&<ArsenalRisks registry={arsenal?.registry||null} reviews={arsenal?.reviewQueue||[]}/>}
             {arsenalTab==='backlog'&&<ArsenalBacklog backlog={arsenal?.knowledgePackBacklog||[]}/>}
+            {arsenalTab==='curation'&&<ArsenalCuration state={arsenal?.knowledge||null} busy={curationBusy} onCreate={()=>void runKnowledgeAction({action:'create'})} onRetry={(packId)=>void runKnowledgeAction({action:'retry',packId})} onReconcile={()=>void runKnowledgeAction({action:'reconcile'})}/>}
           </section>
 
           <section className="grid gap-4 xl:grid-cols-2">
@@ -570,5 +605,64 @@ function ArsenalBacklog({backlog}:{backlog:Array<{id:string;name:string;status:s
     <p className="text-xs text-muted-foreground mb-2">Proposed future knowledge packs — deliberately NOT built yet. They are backlog items for future AgentOS-delegated knowledge-curation missions.</p>
     {backlog.map(item=><div key={item.id} className="rounded-lg border border-border/50 bg-background/40 p-3 mb-2"><div className="flex items-center gap-2"><span className="text-sm font-medium">{item.name}</span><span className="text-[10px] font-mono uppercase text-muted-foreground">{item.status}</span></div><div className="text-[11px] text-muted-foreground mt-1">{item.id}</div></div>)}
     {backlog.length===0&&<div className="text-sm text-muted-foreground">No backlog recorded.</div>}
+  </div>
+}
+function ArsenalCuration({state,busy,onCreate,onRetry,onReconcile}:{
+  state: ArsenalKnowledgeState|null
+  busy: boolean
+  onCreate: ()=>void
+  onRetry: (packId:string)=>void
+  onReconcile: ()=>void
+}){
+  const objective=state?.objective||null
+  const missions=(state?.missions||[]).slice().sort((a,b)=>(a.missionKey<b.missionKey?-1:a.missionKey>b.missionKey?1:0))
+  const plan=(objective?.plan||null) as Record<string,unknown>|null
+  const suiteMeta=(plan?.agentos_knowledge_suite||null) as Record<string,unknown>|null
+  const needsManual=missions.some(m=>m.escalation||m.state==='NEEDS_MANUAL')
+  const packDone=missions.filter(m=>m.missionKey!=='m6'&&m.state==='COMPLETE').length
+  const depLabel=(keys:string[])=>keys.length?`depends: ${keys.map(k=>k.toUpperCase()).join(' ')}`:'independent'
+  return <div className="space-y-3">
+    <div className="flex flex-wrap items-start justify-between gap-3 rounded-lg border border-border/60 bg-background/40 p-3">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 flex-wrap"><p className="text-xs font-mono uppercase tracking-wider text-primary">Knowledge Curation</p>{objective&&<span className={`text-[10px] font-mono uppercase rounded px-1.5 py-0.5 ${objective.status==='completed'?'bg-emerald-500/15 text-emerald-400':objective.status==='needs_manual'?'bg-rose-500/15 text-rose-400':objective.status==='active'?'bg-blue-500/15 text-blue-400':'bg-secondary/50 text-muted-foreground'}`}>{objective.status}</span>}{needsManual&&<span className="text-[10px] font-mono uppercase rounded bg-rose-500/15 px-1.5 py-0.5 text-rose-400">⚠ needs manual</span>}</div>
+        {objective
+          ? <h3 className="text-base font-semibold mt-1">{objective.title} <span className="text-xs font-mono text-muted-foreground">objective #{objective.id}</span></h3>
+          : <h3 className="text-base font-semibold mt-1">Build Tactical Encounter Knowledge Pack Suite</h3>}
+        <p className="text-xs text-muted-foreground mt-1">M1–M5 curate the approved tactical packs (Wesnoth auto + OXCE as explicit manual reference) → staged to <span className="font-mono">00_INBOX/generated-knowledge</span>; M6 validates and finalizes. The vault scanner registers the suite as NEW afterwards — nothing is auto-promoted.</p>
+        {suiteMeta&&<p className="text-[10px] text-muted-foreground mt-2 font-mono break-all">staging: {String(suiteMeta.staging_dir||'')} · output: {String(suiteMeta.output_dir||'')} · state: {String(suiteMeta.state||'PLANNED')}</p>}
+      </div>
+      <div className="flex gap-2">
+        <Button size="sm" variant="outline" disabled={busy} onClick={onReconcile}>Reconcile</Button>
+        {!objective&&<Button size="sm" disabled={busy} onClick={onCreate}>{busy?'Planning…':'Plan Knowledge Suite Objective'}</Button>}
+      </div>
+    </div>
+    {objective&&<>
+      <div className="grid gap-2 md:grid-cols-3">
+        <MiniMetric label="Curation missions" value={packDone}/>
+        <MiniMetric label="Validation (M6)" value={missions.find(m=>m.missionKey==='m6')?.state==='COMPLETE'?1:0}/>
+        <MiniMetric label="Total missions" value={6}/>
+      </div>
+      {needsManual&&<div className="rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">⚠ One or more curation missions are escalated — resolve below (Retry keeps the same task lineage).</div>}
+      <div className="space-y-2 max-h-[32rem] overflow-auto pr-1">
+        {missions.map(mission=>{
+          const escalated=mission.escalation
+          const retryable=mission.state==='FAILED'||mission.state==='NEEDS_MANUAL'||!!escalated
+          return <div key={mission.taskId} className={`rounded-lg border p-3 ${escalated?'border-rose-500/40 bg-rose-500/5':'border-border/50 bg-background/40'}`}>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2 flex-wrap"><span className="text-xs font-mono font-semibold text-primary">{mission.missionKey.toUpperCase()}</span><span className="text-sm font-medium">{mission.title}</span><span className="text-[10px] font-mono uppercase text-muted-foreground">task #{mission.taskId}</span></div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono uppercase rounded px-1.5 py-0.5 bg-secondary/50 text-muted-foreground">{mission.state||mission.status}</span>
+                {retryable&&<Button size="sm" variant="outline" disabled={busy} onClick={()=>onRetry(mission.packId)}>{busy?'Retrying…':'Retry'}</Button>}
+              </div>
+            </div>
+            <div className="text-[10px] text-muted-foreground mt-1.5 font-mono break-all">{mission.packId} · {mission.file} · {depLabel(mission.dependsOnKeys)}</div>
+            <div className="text-[10px] text-muted-foreground mt-1">assigned: {mission.assignedTo||mission.delegation?.specialistName||'unassigned'} · platoon: {mission.delegation?.platoonId||'—'} · runtime: {mission.delegation?.runtimeType||'—'}{mission.delegation?.id?` · delegation ${mission.delegation.id}`:''}{mission.delegation?.nativeRunId?` · run ${mission.delegation.nativeRunId}`:''}</div>
+            {mission.stagedPath&&<div className="text-[10px] font-mono text-emerald-400/80 mt-1 break-all">✓ staged: {mission.stagedPath}</div>}
+            {escalated&&<div className="rounded-md border border-rose-500/30 bg-rose-500/10 px-2.5 py-2 mt-2 text-[11px] text-rose-300"><div className="font-medium">Needs manual — {escalated.reason} ({escalated.category||'MANUAL_REQUIRED'}) · attempts {escalated.attempts??0}</div>{escalated.summary&&<div className="mt-0.5">{escalated.summary}</div>}{escalated.recommendedActions.length>0&&<div className="text-[10px] mt-1 text-rose-400/70">follow-ons: {escalated.recommendedActions.join(', ')}</div>}</div>}
+            {mission.delegation?.errorMessage&&<div className="text-[10px] text-rose-400/80 mt-1">last error: {mission.delegation.errorMessage}</div>}
+          </div>
+        })}
+      </div>
+    </>}
   </div>
 }
