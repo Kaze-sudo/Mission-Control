@@ -133,8 +133,13 @@ export interface AiReviewQueueItem {
     reviewer: string | null
     taskId: number | null
     projectId: number | null
+    objectiveId: number | null
     fingerprint: string | null
     retries: number
+    invalidAttempts: number
+    escalatedReason: string | null
+    escalatedAt: string | null
+    escalation: Record<string, unknown> | null
     error: string | null
     routing: { externalAgentId?: string; agentName?: string; platoonId?: string; routingAgentName?: string } | null
     result: unknown
@@ -704,8 +709,13 @@ export function getAiReviewQueue(root=config.aiVaultRoot): AiReviewQueueItem[] {
       reviewer:item.deep_review.reviewer?String(item.deep_review.reviewer):null,
       taskId:typeof item.deep_review.task_id==='number'?item.deep_review.task_id:null,
       projectId:typeof item.deep_review.project_id==='number'?item.deep_review.project_id:null,
+      objectiveId:typeof item.deep_review.objective_id==='number'?item.deep_review.objective_id:null,
       fingerprint:item.deep_review.fingerprint?String(item.deep_review.fingerprint):null,
       retries:typeof item.deep_review.retries==='number'?item.deep_review.retries:0,
+      invalidAttempts:typeof item.deep_review.invalid_attempts==='number'?item.deep_review.invalid_attempts:0,
+      escalatedReason:item.deep_review.escalated_reason?String(item.deep_review.escalated_reason):null,
+      escalatedAt:item.deep_review.escalated_at?String(item.deep_review.escalated_at):null,
+      escalation:item.deep_review.escalation&&typeof item.deep_review.escalation==='object'?item.deep_review.escalation:null,
       error:item.deep_review.error?String(item.deep_review.error):null,
       routing:item.deep_review.routing&&typeof item.deep_review.routing==='object'?item.deep_review.routing:null,
       result:item.deep_review.result??null,
@@ -780,7 +790,7 @@ export function getAiArsenalState(root=config.aiVaultRoot): {
   platoonMap: AiPlatoonMapPlatoon[]
   selectionOrder: typeof AI_RESOURCE_SELECTION_ORDER
   knowledgePackBacklog: typeof KNOWLEDGE_PACK_BACKLOG
-  summary: { capabilities: number; filled: number; partiallyCovered: number; open: number; resources: number; pendingReviews: number }
+  summary: { capabilities: number; filled: number; partiallyCovered: number; open: number; resources: number; pendingReviews: number; needsManual: number }
 } {
   const coverage=getAiCapabilityCoverage(root)
   const reviewQueue=getAiReviewQueue(root)
@@ -800,6 +810,11 @@ export function getAiArsenalState(root=config.aiVaultRoot): {
       open:coverage.filter(item=>item.status==='OPEN').length,
       resources:getAiResourceRegistry(root).resources.length,
       pendingReviews:reviewQueue.filter(item=>item.pending).length,
+      needsManual:reviewQueue.filter(item=>{
+        if(!item.deepReview) return false
+        const state=String(item.deepReview.status||'').toUpperCase()
+        return state==='NEEDS_MANUAL'||state==='STALE'||!!item.deepReview.escalatedReason
+      }).length,
     },
   }
 }

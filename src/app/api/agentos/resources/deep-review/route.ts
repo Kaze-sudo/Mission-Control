@@ -8,6 +8,7 @@ import {
   listDeepReviewMissions,
   reconcileDeepReviewMissions,
 } from '@/lib/resource-deep-review'
+import { reconcileObjectiveStatuses } from '@/lib/objective-planning'
 
 /**
  * Phase 4/7/8 — AI Arsenal deep-review mission lifecycle.
@@ -76,7 +77,8 @@ export async function POST(request: NextRequest) {
       }
       case 'reconcile': {
         const result = reconcileDeepReviewMissions(root)
-        return NextResponse.json({ ok: true, result })
+        const objectives = reconcileObjectiveStatuses()
+        return NextResponse.json({ ok: true, result, objectivesChanged: objectives.length })
       }
       default:
         return NextResponse.json({ error: `Unknown action "${action}"; expected create|retry|ingest|reconcile` }, { status: 400 })

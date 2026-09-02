@@ -23,7 +23,7 @@ beforeEach(() => {
     );
     CREATE TABLE tasks (
       id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL, workspace_id INTEGER NOT NULL,
-      status TEXT NOT NULL
+      status TEXT NOT NULL, metadata TEXT
     );
   `)
 })

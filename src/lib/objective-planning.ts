@@ -4,6 +4,7 @@ import { routeTaskWithinProject } from './project-task-routing'
 import { analyzeProjectForce } from './project-force-planning'
 import { bindExternalAgentToProject } from './external-project-bindings'
 import { getProjectCommand, updateProjectCommand } from './project-command'
+import { readTaskEscalation } from './agentos-escalation'
 
 export interface ObjectiveMissionInput {
   key?: string
@@ -293,7 +294,22 @@ interface ObjectiveTaskMetadata {
     dependsOnTaskIds?: number[]
     executionState?: string
   }
+  agentos_resource_review?: {
+    state?: string
+  }
 }
+
+/**
+ * A mission is escalated when the generic escalation record is unresolved or
+ * the mission is a resource deep review whose result went STALE — those cannot
+ * count as completed, and surface as a needs-manual objective instead.
+ */
+function isMissionEscalated(raw: string | null | undefined): boolean {
+  if (readTaskEscalation(raw ?? null)) return true
+  if (parseMetadata(raw ?? null)?.agentos_resource_review?.state === 'STALE') return true
+  return false
+}
+
 function parseMetadata(raw: string | null): ObjectiveTaskMetadata {
   if (!raw) return {}
   try {
@@ -583,16 +599,22 @@ export function reconcileObjectiveStatuses(input: {
 
     const placeholders = taskIds.map(() => '?').join(',')
     const rows = db.prepare(`
-      SELECT id, status FROM tasks
+      SELECT id, status, metadata FROM tasks
       WHERE project_id = ? AND workspace_id = ? AND id IN (${placeholders})
-    `).all(objective.project_id, objective.workspace_id, ...taskIds) as Array<{ id: number; status: string }>
+    `).all(objective.project_id, objective.workspace_id, ...taskIds) as Array<{ id: number; status: string; metadata: string | null }>
     if (rows.length !== taskIds.length) continue
 
     const statuses = rows.map(row => row.status)
+    // Escalation-aware lifecycle: a NEEDS_MANUAL / STALE mission elevates the
+    // objective even when the raw task status alone would read as active.
+    const needsManual = rows.some(row => isMissionEscalated(row.metadata))
     let next = objective.status
-    if (statuses.every(status => status === 'done')) next = 'completed'
+    if (needsManual) next = 'needs_manual'
+    else if (statuses.every(status => status === 'done')) next = 'completed'
     else if (statuses.some(status => status === 'failed')) next = 'failed'
     else if (statuses.some(status => !['backlog', 'inbox'].includes(status))) next = 'active'
+    // A resolved escalation with the mission back at rest returns to planned.
+    else if (objective.status === 'needs_manual') next = 'planned'
     else if (objective.status === 'draft') next = 'planned'
 
     if (next === objective.status) continue

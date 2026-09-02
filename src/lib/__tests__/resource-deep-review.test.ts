@@ -24,6 +24,7 @@ import {
   retryDeepReviewMission,
   ingestDeepReviewResult,
   reconcileDeepReviewMissions,
+  applyDeepReviewEscalationPolicy,
   listDeepReviewMissions,
   inferReviewerRequirements,
   parseAndValidateReviewOutput,
@@ -35,6 +36,10 @@ import {
 } from '@/lib/resource-deep-review'
 import { getAiReviewQueue, getAiResourceRegistry } from '@/lib/ai-resource-registry'
 import { performArsenalAction } from '@/lib/ai-resource-actions'
+import { getOrCreateAgentOSOperationsProject } from '@/lib/agentos-operations'
+import { createDelegationForTask } from '@/lib/delegation-ledger'
+import { reconcileObjectiveStatuses } from '@/lib/objective-planning'
+import { classifyEscalation } from '@/lib/agentos-escalation'
 import type { AiReviewQueueItem } from '@/lib/ai-resource-registry'
 
 let root = ''
@@ -56,7 +61,19 @@ function seedDb(): void {
       task_id INTEGER, author TEXT, content TEXT, created_at INTEGER, workspace_id INTEGER
     );
     CREATE TABLE projects (
-      id INTEGER PRIMARY KEY, name TEXT, slug TEXT, workspace_id INTEGER, status TEXT, ticket_counter INTEGER, updated_at INTEGER DEFAULT 0
+      id INTEGER PRIMARY KEY, name TEXT NOT NULL, slug TEXT NOT NULL, description TEXT,
+      ticket_prefix TEXT NOT NULL, ticket_counter INTEGER NOT NULL DEFAULT 0,
+      workspace_id INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'active',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()), updated_at INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(workspace_id, slug)
+    );
+    CREATE TABLE agentos_objectives (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL, workspace_id INTEGER NOT NULL,
+      title TEXT NOT NULL, description TEXT,
+      status TEXT NOT NULL DEFAULT 'planned',
+      plan_json TEXT NOT NULL DEFAULT '{}', created_by TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()), updated_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
     CREATE TABLE agentos_delegations (
       id TEXT PRIMARY KEY, task_id INTEGER, project_id INTEGER, workspace_id INTEGER, objective_id INTEGER,
@@ -204,7 +221,11 @@ describe('createDeepReviewMission', () => {
     expect(mission.routed).toBe(false)
     const task = taskById(mission.taskId)
     expect(task.status).toBe('inbox')
-    expect(task.project_id).toBeNull()
+    // Phase 2 — the review belongs to the internal AgentOS Operations project,
+    // never to an arbitrary user project, and is a normal objective mission.
+    const ops = state.db!.prepare("SELECT id FROM projects WHERE slug = 'agentos-operations' AND workspace_id = 1").get() as any
+    expect(ops).toBeTruthy()
+    expect(task.project_id).toBe(ops.id)
     expect(JSON.parse(task.tags)).toContain('agentos-resource-review')
     const metadata = JSON.parse(task.metadata)
     const review = metadata.agentos_resource_review
@@ -216,22 +237,30 @@ describe('createDeepReviewMission', () => {
     expect(review.detected_state).toBe('NEW')
     expect(review.resource_path).toContain('new-tactical-lib')
     expect(review.fingerprint).toMatch(/^[a-f0-9]{64}$/)
+    expect(review.objective_id).toBe(mission.objectiveId)
+    expect(metadata.agentos.objectiveId).toBe(mission.objectiveId)
+    expect(metadata.agentos.objectiveMission).toBe(true)
     expect(metadata.agentos.requiredCapabilities).toEqual(['resource-deep-review'])
     expect(metadata.agentos.preferredCapabilities.length).toBeGreaterThan(0)
     expect(metadata.agentos.disableInference).toBe(true)
     // Filtered registry snapshot, not the whole vault.
     expect(Array.isArray(review.authoritative_registry_snapshot.filtered)).toBe(true)
     expect(review.authoritative_registry_snapshot.total).toBe(4)
-    // Queue item linked to the mission.
+    // Objective row created through the normal Company Commander path + marker.
+    const objective = state.db!.prepare('SELECT status, plan_json FROM agentos_objectives WHERE id = ?').get(mission.objectiveId!) as any
+    expect(objective.status).toBe('planned')
+    expect(JSON.parse(objective.plan_json).agentos_review_link.review_id).toBe('rq-pending-newlib')
+    // Queue item linked to the mission + objective.
     const item = queueItem('rq-pending-newlib')
     expect(item.deep_review.status).toBe('ROUTED')
     expect(item.deep_review.task_id).toBe(mission.taskId)
+    expect(item.deep_review.objective_id).toBe(mission.objectiveId)
     expect(item.deep_review.fingerprint).toBe(review.fingerprint)
   })
 
-  it('routes through normal AgentOS project routing when a project is provided', () => {
-    state.db!.prepare('INSERT INTO projects (id, name, slug, workspace_id, status, ticket_counter) VALUES (3, ?, ?, 1, ?, 40)')
-      .run('Review Project', 'review-project', 'active')
+  it('routes through normal AgentOS project routing when an explicit active project is provided', () => {
+    state.db!.prepare('INSERT INTO projects (id, name, slug, workspace_id, status, ticket_counter, ticket_prefix) VALUES (3, ?, ?, 1, ?, 40, ?)')
+      .run('Review Project', 'review-project', 'active', 'REV')
     state.routeMock.mockReturnValue({
       routed: true, taskId: 0, projectId: 3,
       selected: { externalAgentId: 'ext-hermes', agentName: 'Hermes Reviewer', platoonId: 'hermes', routingAgentName: 'AgentOS Hermes Router', score: 87, reasons: ['Matched required: resource-deep-review'] },
@@ -239,13 +268,17 @@ describe('createDeepReviewMission', () => {
     const mission = createDeepReviewMission({ reviewId: 'rq-pending-newlib', workspaceId, projectId: 3, actor: 'commander', root })
     expect(state.routeMock).toHaveBeenCalledWith(expect.objectContaining({ taskId: mission.taskId, workspaceId }))
     expect(mission.routed).toBe(true)
+    expect(mission.projectId).toBe(3)
     const item = queueItem('rq-pending-newlib')
     expect(item.deep_review.routing.agentName).toBe('Hermes Reviewer')
     expect(item.deep_review.routing.platoonId).toBe('hermes')
+    expect(item.deep_review.objective_id).toBe(mission.objectiveId)
     const task = taskById(mission.taskId)
     expect(task.project_id).toBe(3)
     expect(task.project_ticket_no).toBe(41)
     expect(task.status).toBe('inbox') // routing marks assigned_to; dispatch happens via scheduler
+    const objective = state.db!.prepare('SELECT project_id FROM agentos_objectives WHERE id = ?').get(mission.objectiveId!) as any
+    expect(objective.project_id).toBe(3)
   })
 
   it('refuses to spawn a duplicate mission while one is in flight', () => {
@@ -253,6 +286,7 @@ describe('createDeepReviewMission', () => {
     expect(() => createDeepReviewMission({ reviewId: 'rq-pending-newlib', workspaceId, root }))
       .toThrowError(/already routed/i)
     expect((state.db!.prepare('SELECT COUNT(*) c FROM tasks').get() as any).c).toBe(1)
+    expect((state.db!.prepare('SELECT COUNT(*) c FROM agentos_objectives').get() as any).c).toBe(1)
   })
 
   it('reuses the existing mission when retried after failure (no duplicate tasks)', () => {
@@ -465,5 +499,173 @@ describe('traceability + isolation', () => {
     expect(item?.deepReview?.status).toBe('ROUTED')
     expect(item?.deepReview?.taskId).toBeGreaterThan(0)
     expect(typeof item?.deepReview?.fingerprint).toBe('string')
+  })
+})
+
+describe('deep-review objectives + NEEDS_MANUAL escalation (Company Commander lifecycle)', () => {
+  const objectiveById = (id: number) => state.db!.prepare('SELECT * FROM agentos_objectives WHERE id = ?').get(id) as any
+  const taskEscalation = (taskId: number) => {
+    const record = JSON.parse(taskById(taskId).metadata).agentos_escalation || null
+    return record?.resolved_at ? null : record
+  }
+
+  it('creates ONE internal AgentOS Operations project per workspace', () => {
+    const first = getOrCreateAgentOSOperationsProject(1)
+    const again = getOrCreateAgentOSOperationsProject(1)
+    expect(again.id).toBe(first.id)
+    const other = getOrCreateAgentOSOperationsProject(2)
+    expect(other.id).not.toBe(first.id)
+    expect(state.db!.prepare("SELECT COUNT(*) c FROM projects WHERE slug = 'agentos-operations'").get() as any).toEqual({ c: 2 })
+  })
+
+  it('links review queue item → internal objective → mission task → delegation (objective_id traced)', () => {
+    const mission = createDeepReviewMission({ reviewId: 'rq-pending-newlib', workspaceId, root })
+    const delegation = createDelegationForTask({
+      taskId: mission.taskId,
+      projectId: mission.projectId,
+      workspaceId,
+      routingAgentName: 'AgentOS Router',
+      runtimeType: 'hermes',
+      metadata: taskById(mission.taskId).metadata,
+    })
+    expect(delegation.objectiveId).toBe(mission.objectiveId)
+    const metadata = JSON.parse(taskById(mission.taskId).metadata)
+    expect(metadata.agentos_delegation_id).toBe(delegation.id)
+    const trace = listDeepReviewMissions(workspaceId).find(t => t.reviewId === 'rq-pending-newlib')
+    expect(trace?.objectiveId).toBe(mission.objectiveId)
+    expect(trace?.delegation?.id).toBe(delegation.id)
+  })
+
+  it('reconciles the objective to COMPLETED once the review mission completes', () => {
+    const mission = createDeepReviewMission({ reviewId: 'rq-pending-newlib', workspaceId, root })
+    addComment(mission.taskId, validReviewEnvelope())
+    state.db!.prepare("UPDATE tasks SET status = 'review' WHERE id = ?").run(mission.taskId)
+    expect(ingestDeepReviewResult({ taskId: mission.taskId, workspaceId, root }).status).toBe('COMPLETE')
+    state.db!.prepare("UPDATE tasks SET status = 'done' WHERE id = ?").run(mission.taskId)
+    const changed = reconcileObjectiveStatuses({ workspaceId })
+    expect(changed.some(c => c.objectiveId === mission.objectiveId && c.status === 'completed')).toBe(true)
+    expect(objectiveById(mission.objectiveId!).status).toBe('completed')
+  })
+
+  it('a STALE review never counts as completed — the objective surfaces needs-manual', () => {
+    const mission = createDeepReviewMission({ reviewId: 'rq-pending-newlib', workspaceId, root })
+    addComment(mission.taskId, validReviewEnvelope())
+    state.db!.prepare("UPDATE tasks SET status = 'review' WHERE id = ?").run(mission.taskId)
+    // Resource changed mid-review (fingerprint mismatch).
+    const queueDoc = JSON.parse(read(root, '_CATALOG/agentos_resource_review_queue.json'))
+    const candidate = queueDoc.items.find((i: any) => i.review_id === 'rq-pending-newlib')
+    candidate.probable_name = 'new-tactical-lib-v2'
+    candidate.preliminary_quality_score = 88
+    write(root, '_CATALOG/agentos_resource_review_queue.json', JSON.stringify(queueDoc, null, 2))
+
+    expect(ingestDeepReviewResult({ taskId: mission.taskId, workspaceId, root }).status).toBe('STALE')
+    const escalation = taskEscalation(mission.taskId)
+    expect(escalation?.reason).toBe('stale_resource')
+    expect(escalation?.category).toBe('STALE')
+    expect(escalation?.recommended_actions).toContain('retry-review')
+    expect(queueItem('rq-pending-newlib').deep_review.status).toBe('STALE') // result state preserved
+    expect(queueItem('rq-pending-newlib').deep_review.escalation.reason).toBe('stale_resource')
+    // Objective mirrored the escalation and will reconcile to needs_manual, not completed.
+    expect(JSON.parse(objectiveById(mission.objectiveId!).plan_json).agentos_escalation.reason).toBe('stale_resource')
+    reconcileObjectiveStatuses({ workspaceId })
+    expect(objectiveById(mission.objectiveId!).status).toBe('needs_manual')
+  })
+
+  it('retries invalid output, then exhausts the budget → NEEDS_MANUAL → manual retry resolves it (same lineage)', () => {
+    const mission = createDeepReviewMission({ reviewId: 'rq-pending-newlib', workspaceId, root })
+    const attemptInvalid = () => {
+      addComment(mission.taskId, 'not json at all')
+      state.db!.prepare("UPDATE tasks SET status = 'review' WHERE id = ?").run(mission.taskId)
+      return ingestDeepReviewResult({ taskId: mission.taskId, workspaceId, root }).status
+    }
+    expect(attemptInvalid()).toBe('INVALID_RESULT')
+    expect(queueItem('rq-pending-newlib').deep_review.invalid_attempts).toBe(1)
+    // One-off invalid output is retryable, not escalated.
+    expect(applyDeepReviewEscalationPolicy(root).escalated).toHaveLength(0)
+
+    const retried = retryDeepReviewMission({ reviewId: 'rq-pending-newlib', workspaceId, root })
+    expect(retried.taskId).toBe(mission.taskId)
+    expect(queueItem('rq-pending-newlib').deep_review.retries).toBe(1)
+
+    // Second invalid output exhausts the retry budget.
+    expect(attemptInvalid()).toBe('INVALID_RESULT')
+    const item = queueItem('rq-pending-newlib')
+    expect(item.deep_review.status).toBe('NEEDS_MANUAL')
+    expect(item.deep_review.escalated_reason).toBe('invalid_structured_output')
+    const escalation = taskEscalation(mission.taskId)
+    expect(escalation?.reason).toBe('invalid_structured_output')
+    expect(escalation?.attempts).toBe(2)
+    expect(escalation?.recommended_actions).toEqual(expect.arrayContaining(['retry-review']))
+    // Activity trail recorded with objective linkage.
+    expect(state.activities.some((args: any) =>
+      args[0] === 'agentos_escalation_needs_manual' && args[2] === mission.taskId && args[5]?.objective_id === mission.objectiveId)).toBe(true)
+    // Objective visibly blocked/escalated, never completed.
+    reconcileObjectiveStatuses({ workspaceId })
+    expect(objectiveById(mission.objectiveId!).status).toBe('needs_manual')
+    expect(JSON.parse(objectiveById(mission.objectiveId!).plan_json).agentos_escalation.state).toBe('NEEDS_MANUAL')
+
+    // Manual retry preserves lineage, clears escalation, objective unblocks.
+    const retriedAgain = retryDeepReviewMission({ reviewId: 'rq-pending-newlib', workspaceId, root, actor: 'commander' })
+    expect(retriedAgain.taskId).toBe(mission.taskId)
+    const after = queueItem('rq-pending-newlib')
+    expect(after.deep_review.status).toBe('ROUTED')
+    expect(after.deep_review.escalated_reason).toBeNull()
+    expect(taskEscalation(mission.taskId)).toBeNull()
+    expect(state.activities.some((args: any) => args[0] === 'agentos_escalation_resolved')).toBe(true)
+    reconcileObjectiveStatuses({ workspaceId })
+    expect(objectiveById(mission.objectiveId!).status).not.toBe('needs_manual')
+  })
+
+  it('classifies failures into retryable / manual-required / stale / waiting-approval / terminal', () => {
+    expect(classifyEscalation('concurrency_blocked_too_long')).toBe('RETRYABLE')
+    expect(classifyEscalation('invalid_structured_output')).toBe('MANUAL_REQUIRED')
+    expect(classifyEscalation('stale_resource')).toBe('STALE')
+    expect(classifyEscalation('approval_required')).toBe('WAITING_APPROVAL')
+    expect(classifyEscalation('unsupported_action')).toBe('TERMINAL_FAILURE')
+  })
+
+  it('escalates a failed dispatch with a missing-resource error immediately (NEEDS_MANUAL)', () => {
+    const mission = createDeepReviewMission({ reviewId: 'rq-pending-newlib', workspaceId, root })
+    state.db!.prepare(`INSERT INTO agentos_delegations (id, task_id, workspace_id, status, error_message, created_at, updated_at, attempt)
+      VALUES ('del-fail', ?, ?, 'failed', 'workdir not found for resource', 1700000000, 1700000000, 1)`).run(mission.taskId, workspaceId)
+    state.db!.prepare("UPDATE tasks SET status = 'failed' WHERE id = ?").run(mission.taskId)
+    const result = reconcileDeepReviewMissions(root)
+    expect(result.escalated).toBe(1)
+    expect(queueItem('rq-pending-newlib').deep_review.status).toBe('NEEDS_MANUAL')
+    expect(queueItem('rq-pending-newlib').deep_review.escalated_reason).toBe('missing_resource')
+    expect(JSON.parse(taskById(mission.taskId).metadata).agentos_escalation.reason).toBe('missing_resource')
+  })
+
+  it('keeps a one-off dispatch failure retryable without escalating', () => {
+    const mission = createDeepReviewMission({ reviewId: 'rq-pending-newlib', workspaceId, root })
+    state.db!.prepare(`INSERT INTO agentos_delegations (id, task_id, workspace_id, status, error_message, created_at, updated_at, attempt)
+      VALUES ('del-fail2', ?, ?, 'failed', 'timeout after 30s', 1700000000, 1700000000, 1)`).run(mission.taskId, workspaceId)
+    state.db!.prepare("UPDATE tasks SET status = 'failed' WHERE id = ?").run(mission.taskId)
+    const policy = applyDeepReviewEscalationPolicy(root)
+    expect(policy.escalated).toHaveLength(0)
+    expect(policy.retryable).toBe(1)
+    expect(queueItem('rq-pending-newlib').deep_review.status).toBe('ROUTED')
+  })
+
+  it('keeps review objectives and operations projects workspace-isolated', () => {
+    createDeepReviewMission({ reviewId: 'rq-pending-newlib', workspaceId: 1, root })
+    const other = createDeepReviewMission({ reviewId: 'rq-pending-weak-skill', workspaceId: 2, root })
+    expect(other.objectiveId).not.toBeNull()
+    expect((state.db!.prepare('SELECT COUNT(*) c FROM agentos_objectives WHERE workspace_id = 1').get() as any).c).toBe(1)
+    expect((state.db!.prepare('SELECT COUNT(*) c FROM agentos_objectives WHERE workspace_id = 2').get() as any).c).toBe(1)
+    expect((state.db!.prepare("SELECT COUNT(*) c FROM projects WHERE slug='agentos-operations' AND workspace_id=1").get() as any).c).toBe(1)
+    expect((state.db!.prepare("SELECT COUNT(*) c FROM projects WHERE slug='agentos-operations' AND workspace_id=2").get() as any).c).toBe(1)
+    const traces1 = listDeepReviewMissions(1)
+    expect(traces1.some(t => t.reviewId === 'rq-pending-weak-skill')).toBe(false)
+    const traces2 = listDeepReviewMissions(2)
+    expect(traces2.some(t => t.reviewId === 'rq-pending-newlib')).toBe(false)
+  })
+
+  it('honors an explicit active-project override (manual authority preserved)', () => {
+    state.db!.prepare("INSERT INTO projects (id, name, slug, workspace_id, status, ticket_counter, ticket_prefix) VALUES (9, 'User Game', 'user-game', 1, 'active', 5, 'UG')").run()
+    const mission = createDeepReviewMission({ reviewId: 'rq-pending-newlib', workspaceId, projectId: 9, root })
+    expect(mission.projectId).toBe(9)
+    expect(taskById(mission.taskId).project_id).toBe(9)
+    expect(objectiveById(mission.objectiveId!).project_id).toBe(9)
   })
 })

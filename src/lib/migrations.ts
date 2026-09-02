@@ -1754,6 +1754,43 @@ const migrations: Migration[] = [
           ON agentos_delegations(native_session_id, native_run_id);
       `)
     }
+  },
+  {
+    id: '064_agentos_objectives_needs_manual',
+    // Table rebuild to extend the status CHECK with 'needs_manual'.
+    // agentos_delegations.objective_id references this table by name; with
+    // foreign_keys OFF during the swap the rebuild is atomic and FK-safe.
+    foreignKeysOff: true,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE agentos_objectives_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          status TEXT NOT NULL DEFAULT 'planned'
+            CHECK(status IN ('draft','planned','active','completed','failed','needs_manual','cancelled')),
+          plan_json TEXT NOT NULL DEFAULT '{}',
+          created_by TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        INSERT INTO agentos_objectives_new (
+          id, project_id, workspace_id, title, description, status, plan_json,
+          created_by, created_at, updated_at
+        )
+        SELECT id, project_id, workspace_id, title, description, status, plan_json,
+               created_by, created_at, updated_at
+        FROM agentos_objectives;
+        DROP TABLE agentos_objectives;
+        ALTER TABLE agentos_objectives_new RENAME TO agentos_objectives;
+        CREATE INDEX IF NOT EXISTS idx_agentos_objectives_project
+          ON agentos_objectives(project_id, workspace_id, status, created_at DESC);
+      `)
+    }
   }
 ]
 

@@ -62,27 +62,35 @@ moves ever happen.
 
 ## Deep-review mission lifecycle (`src/lib/resource-deep-review.ts`)
 
-`Request Deep Review` in the Review Queue creates a NORMAL AgentOS mission:
+`Request Deep Review` in the Review Queue creates a NORMAL AgentOS objective
+and mission, participating in the same Company Commander lifecycle as any other
+work — objectives → mission graph → routing → delegation → result → follow-on:
 
 1. **Queued** — the existing `request-deep-review` action marks the item QUEUED.
-2. **Mission created** — `POST /api/agentos/resources/deep-review`
-   (`createDeepReviewMission`) inserts an `agentos-resource-review` tagged task
-   carrying the canonical `agentos_resource_review` contract: review_id,
-   resource id/path, `required_output_schema: agentos-resource-review-v1`,
-   filtered registry + overlap snapshots, creation metadata, and a SHA-256
-   **fingerprint** of the candidate + its registry entry.
+2. **Internal objective + mission created** — `POST
+   /api/agentos/resources/deep-review` (`createDeepReviewMission`) creates a
+   normal objective via `createObjectivePlan` under the per-workspace
+   **AgentOS Operations** project (`agentos-operations`, reserved slug) unless
+   an explicit active project was chosen (manual override preserved). The
+   mission task is an ordinary Company Commander objective mission carrying the
+   canonical `agentos_resource_review` contract: review_id, resource id/path,
+   `required_output_schema: agentos-resource-review-v1`, filtered registry +
+   overlap snapshots, creation metadata, and a SHA-256 **fingerprint** of the
+   candidate + its registry entry — plus `objective_id` and an
+   `agentos_review_link` marker in the objective's plan_json. One objective per
+   review; retries reuse the same lineage.
 3. **Requirements inferred** — required capability is always
    `resource-deep-review`; preferred capabilities are inferred from the
    candidate's detected capabilities plus a declared domain-affinity map (game
    → game-development/qa-release/architecture, mcp → mcp/backend/security,
    knowledge → research/knowledge-management, …).
-4. **Reviewer routed** — the task flows through the normal
-   `routeTaskWithinProject` project/specialist selector (respecting the project
-   command guard at dispatch, platoon allowlists, availability, specialist
-   affinity, concurrency). No parallel dispatcher.
+4. **Reviewer routed** — the mission flows through `createObjectivePlan`'s
+   normal `routeTaskWithinProject` project/specialist selector (respecting the
+   project command guard at dispatch, platoon allowlists, availability,
+   specialist affinity, concurrency). No parallel dispatcher.
 5. **Dispatch** — the existing scheduler dispatches it over the chosen native
-   runtime (Hermes/Gamut/Codex/Claude/…); the delegation ledger tracks
-   session/run IDs.
+   runtime (Hermes/Gamut/Codex/Claude/…); the delegation ledger records
+   `objective_id` straight from the mission metadata, tracking session/run IDs.
 6. **Result ingestion** — `reconcileDeepReviewMissions` (wired into the
    scheduler's `task_dispatch` job) parses completed responses, validates the
    `agentos-resource-review-v1` envelope (review_id/resource_id match, field
@@ -95,6 +103,37 @@ moves ever happen.
 (invalid/mismatched output), `STALE` (resource changed during review),
 `NEEDS_MANUAL`, and safe retry that reuses the existing mission task rather
 than duplicating it.
+
+## Objective lifecycle & NEEDS_MANUAL escalation
+
+Deep-review objectives follow real mission state through the existing objective
+reconciler (`reconcileObjectiveStatuses`, also wired into the scheduler):
+mission done + review complete → objective `completed`; STALE or escalated work
+→ objective `needs_manual` (a new first-class status added by migration 064;
+the module also reconciles objectives for non-review work). **STALE never
+counts as completed.**
+
+Escalation is a generic AgentOS service (`src/lib/agentos-escalation.ts`) — any
+workflow can use it, not just reviews. Failures are classified
+`RETRYABLE` / `MANUAL_REQUIRED` / `STALE` / `WAITING_APPROVAL` /
+`TERMINAL_FAILURE` and only escalate after the retry budget
+(`DEEP_REVIEW_MAX_RETRIES = 2`, `DEEP_REVIEW_MAX_INVALID_ATTEMPTS = 2`):
+
+- one-off invalid output or dispatch failure → retryable, no escalation;
+- repeated invalid structured output → `NEEDS_MANUAL`
+  (`invalid_structured_output`);
+- resource changed mid-review → `STALE` (`stale_resource`), fresh review offered;
+- missing / inaccessible resource path → immediate `NEEDS_MANUAL`;
+- repeated dispatch failure / no eligible reviewer → `NEEDS_MANUAL`.
+
+Each escalation writes an `agentos_escalation` record (state, category, reason,
+summary, recommended safe follow-ons, attempts, task/objective/delegation/
+resource ids) to the task metadata, mirrors it onto the objective's plan_json,
+and logs `agentos_escalation_needs_manual` / `agentos_escalation_resolved` in
+the activity trail. Manual **Retry Review** reuses the same mission task,
+clears the escalation, and the objective unblocks. The UI surfaces a red
+**Needs manual** filter + banner and shows the escalation reason, attempts,
+objective, and recommended follow-on actions.
 
 ## Delegation, not hard-coding
 

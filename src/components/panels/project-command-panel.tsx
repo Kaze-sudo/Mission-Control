@@ -22,10 +22,12 @@ interface ArsenalResource { id:string; name:string; path:string; type:string; sc
 interface ArsenalCoverageEntry { resourceId:string; name:string; score:number|null; status:string; autoSelectAllowed:boolean; manualOnly:boolean; usage:string|null; note:string|null; preferredPlatoon:string|null; preferredSpecialistRole:string|null }
 interface ArsenalCoverage { capability:string; status:'FILLED'|'PARTIALLY_COVERED'|'OPEN'; preferred:ArsenalCoverageEntry[]; secondary:ArsenalCoverageEntry[]; reference:ArsenalCoverageEntry[]; notProviders:string[]; note:string|null }
 interface ArsenalChangeState { scanId:string; scanTime:string; baselineVersion:string; unchanged:string[]; changed:string[]; new:string[]; missing:string[]; duplicateCandidates:string[]; supersessionCandidates:string[]; promoted:string[]; gapNote:string }
-interface ArsenalDeepReview { requiredCapability:string; status:string; requestedAt:string; requestedBy:string|null; reviewer:string|null; taskId:number|null; projectId:number|null; fingerprint:string|null; retries:number; error:string|null; routing:{externalAgentId?:string;agentName?:string;platoonId?:string;routingAgentName?:string}|null; result:unknown; proposal:Record<string,unknown>|null; reviewCompletedAt:string|null }
+interface ArsenalEscalation { state:string; category:string|null; reason:string; summary:string|null; recommended_actions:string[]; attempts:number|null; task_id:number|null; objective_id:number|null; delegation_id:string|null; resource_id:string|null; created_at:string|null; resolved_at:string|null }
+interface ArsenalDeepReview { requiredCapability:string; status:string; requestedAt:string; requestedBy:string|null; reviewer:string|null; taskId:number|null; projectId:number|null; objectiveId:number|null; fingerprint:string|null; retries:number; invalidAttempts:number; escalatedReason:string|null; escalatedAt:string|null; escalation:ArsenalEscalation|null; error:string|null; routing:{externalAgentId?:string;agentName?:string;platoonId?:string;routingAgentName?:string}|null; result:unknown; proposal:Record<string,unknown>|null; reviewCompletedAt:string|null }
 interface ArsenalReviewItem { reviewId:string; detectedState:string; path:string; probableName:string; probableSourceRepo:string|null; probableResourceType:string|null; detectedCapabilities:string[]; inferredPrimaryCapability:string|null; coversCapabilityGaps:string[]; likelyOverlaps:string[]; runtimePathRisks:string[]; preliminaryQualityScore:number|null; preliminaryAgentosRelevance:string|null; suggestedPlatoon:string|null; suggestedSpecialistRole:string|null; recommendedAction:string|null; reviewStatus:string; pending:boolean; promotionBatchId:string|null; finalApprovedDecision:string|null; deepReview?:ArsenalDeepReview }
 interface ArsenalReviewMissionTrace {
-  taskId:number; reviewId:string; title:string; status:string; assignedTo:string|null; projectId:number|null; createdAt:number; updatedAt:number; reviewState:string|null; fingerprint:string|null
+  taskId:number; reviewId:string; title:string; status:string; assignedTo:string|null; projectId:number|null; objectiveId:number|null; createdAt:number; updatedAt:number; reviewState:string|null; fingerprint:string|null
+  escalation: { reason:string|null; category:string|null; attempts:number|null; summary:string|null; recommendedActions:string[] } | null
   delegation: { id:string|null; status:string|null; nativeSessionId:string|null; nativeRunId:string|null; attempt:number|null; runtimeType:string|null; platoonId:string|null; specialistName:string|null; errorMessage:string|null } | null
 }
 interface ArsenalPromotion { promotionBatchId:string; approvedAt:string; approvedResources:string[]; previousState:Record<string,unknown>|null; newState:Record<string,unknown>|null; capabilitiesAdded:string[]; overlapChanges:string[]; warnings:string[]; reviewerDecision:string|null }
@@ -37,7 +39,7 @@ interface ArsenalState {
   promotionHistory: ArsenalPromotion[]
   knowledgePackBacklog: Array<{ id:string; name:string; status:string }>
   missions?: ArsenalReviewMissionTrace[]
-  summary?: { resources:number; capabilities:number; filled:number; partiallyCovered:number; open:number; pendingReviews:number }
+  summary?: { resources:number; capabilities:number; filled:number; partiallyCovered:number; open:number; pendingReviews:number; needsManual:number }
 }
 type ArsenalTab = 'recommendations'|'registry'|'coverage'|'changes'|'reviews'|'history'|'overlaps'|'risks'|'backlog'
 
@@ -65,6 +67,7 @@ export function ProjectCommandPanel() {
   const [actionMessage,setActionMessage]=useState<string|null>(null)
   const [pendingAction,setPendingAction]=useState<{resourceId:string;action:string}|null>(null)
   const [deepReviewBusy,setDeepReviewBusy]=useState(false)
+  const arsenalNeedsManual=arsenal?.summary?.needsManual||0
   const [handoffFrom,setHandoffFrom]=useState('')
   const [handoffCaps,setHandoffCaps]=useState('')
   const [handoffInstructions,setHandoffInstructions]=useState('')
@@ -262,7 +265,7 @@ export function ProjectCommandPanel() {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div><p className="text-xs font-mono uppercase tracking-wider text-primary">AI Arsenal</p><h2 className="text-lg font-semibold mt-1">Approved skills, tools & knowledge</h2></div>
               <div className="flex items-center gap-3">
-                {arsenal?.summary&&<span className="text-[10px] text-muted-foreground">{arsenal.summary.resources} resources · {arsenal.summary.filled} filled · {arsenal.summary.partiallyCovered} partial · {arsenal.summary.open} open</span>}
+                {arsenal?.summary&&<span className="text-[10px] text-muted-foreground">{arsenal.summary.resources} resources · {arsenal.summary.filled} filled · {arsenal.summary.partiallyCovered} partial · {arsenal.summary.open} open{arsenal.summary.needsManual>0?<span className="text-rose-400"> · {arsenal.summary.needsManual} need manual</span>:null}</span>}
                 <Button size="sm" variant="outline" disabled={resourceBusy} onClick={()=>void rescanAiVault()}>{resourceBusy?'Scanning…':'Rescan D:\AI'}</Button>
               </div>
             </div>
@@ -276,6 +279,7 @@ export function ProjectCommandPanel() {
             {arsenalTab==='coverage'&&<ArsenalCoverage coverage={arsenal?.capabilityCoverage||[]}/>}
             {arsenalTab==='changes'&&<ArsenalChanges changes={arsenal?.changes||null}/>}
             {arsenalTab==='reviews'&&<ArsenalReviews items={arsenal?.reviewQueue||[]} missions={arsenal?.missions||[]} pendingAction={pendingAction} setPendingAction={setPendingAction} busy={actionBusy} onSubmit={submitArsenalAction} deepReviewBusy={deepReviewBusy} onDeepReview={runDeepReviewAction}/>}
+            {arsenalTab==='reviews'&&arsenalNeedsManual>0&&<div className="rounded-md border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">⚠ {arsenalNeedsManual} escalated review{arsenalNeedsManual===1?'':'s'} need human attention below.</div>}
             {arsenalTab==='history'&&<ArsenalHistory history={arsenal?.promotionHistory||[]}/>}
             {arsenalTab==='overlaps'&&<ArsenalOverlaps registry={arsenal?.registry||null}/>}
             {arsenalTab==='risks'&&<ArsenalRisks registry={arsenal?.registry||null} reviews={arsenal?.reviewQueue||[]}/>}
@@ -419,13 +423,21 @@ function ArsenalReviews({items,missions,pendingAction,setPendingAction,busy,onSu
   deepReviewBusy:boolean
   onDeepReview:(payload:{action:'create'|'retry';reviewId:string;reviewer?:string})=>Promise<void>
 }){
+  const [filter,setFilter]=useState<'all'|'needs-manual'>('all')
   const pending=items.filter(item=>item.pending)
   const decided=items.filter(item=>!item.pending)
+  const isNeedsManual=(item:ArsenalReviewItem)=>{const state=(item.deepReview?.status||'').toUpperCase();return state==='NEEDS_MANUAL'||state==='STALE'||!!item.deepReview?.escalatedReason}
   const reviewInFlight=(item:ArsenalReviewItem)=>['QUEUED','ROUTED','RUNNING'].includes((item.deepReview?.status||'').toUpperCase())
+  const visible=pending.filter(item=>filter!=='needs-manual'||isNeedsManual(item))
+  const needsManualCount=pending.filter(isNeedsManual).length
   return <div className="space-y-2">
     <p className="text-xs text-muted-foreground">Candidates detected by the AI vault scan pipeline ({items.length} total, {pending.length} pending). Deep review delegates a structured review mission to the most qualified reviewer; the result is validated (agentos-resource-review-v1) before approvals unlock.</p>
-    {pending.length===0&&<div className="text-sm text-muted-foreground">No pending review candidates.</div>}
-    {pending.map(item=>{
+    <div className="flex flex-wrap items-center gap-1.5">
+      <button onClick={()=>setFilter('all')} className={`rounded-md px-2 py-1 text-[10px] font-medium ${filter==='all'?'bg-primary text-primary-foreground':'bg-secondary/50 text-muted-foreground'}`}>All · {pending.length}</button>
+      {needsManualCount>0&&<button onClick={()=>setFilter('needs-manual')} className={`rounded-md px-2 py-1 text-[10px] font-medium ${filter==='needs-manual'?'bg-rose-500 text-white':'bg-rose-500/10 text-rose-300'}`}>⚠ Needs manual · {needsManualCount}</button>}
+    </div>
+    {visible.length===0&&<div className="text-sm text-muted-foreground">{filter==='needs-manual'?'Nothing escalated right now.':'No pending review candidates.'}</div>}
+    {visible.map(item=>{
       const trace=missions.find(mission=>mission.reviewId===item.reviewId)
       const state=(item.deepReview?.status||'').toUpperCase()
       const decideDisabled=reviewInFlight(item)
@@ -450,12 +462,24 @@ function ArsenalReviews({items,missions,pendingAction,setPendingAction,busy,onSu
             {item.deepReview.routing?.platoonId&&<span>Platoon: {item.deepReview.routing.platoonId}</span>}
             {item.deepReview.retries>0&&<span>Retries: {item.deepReview.retries}</span>}
             {item.deepReview.taskId&&<span>Mission: Task {item.deepReview.taskId}</span>}
+            {item.deepReview.objectiveId&&<span>Objective #{item.deepReview.objectiveId}</span>}
             {item.deepReview.reviewCompletedAt&&<span>Completed: {item.deepReview.reviewCompletedAt}</span>}
           </div>
           {trace&&<div className="flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground">
             <span>Task {trace.taskId} · {trace.status}</span>
             {trace.delegation&&                <span>Delegation {trace.delegation.id?.slice(0,8)} · {trace.delegation.status||'pending'} · {trace.delegation.runtimeType||'runtime'}{trace.delegation.platoonId?` · ${trace.delegation.platoonId}`:''}{trace.delegation.specialistName?` · ${trace.delegation.specialistName}`:''}{trace.delegation.nativeSessionId?` · session ${trace.delegation.nativeSessionId.slice(0,12)}`:''}{trace.delegation.nativeRunId?` · run ${trace.delegation.nativeRunId.slice(0,12)}`:''}{(trace.delegation.attempt||0)>1?` · attempt ${trace.delegation.attempt}`:''}</span>}
             {trace?.delegation?.errorMessage&&<span className="text-destructive">error: {trace.delegation.errorMessage.slice(0,120)}</span>}
+          </div>}
+          {(item.deepReview.escalatedReason||trace?.escalation)&&<div className="rounded border border-rose-500/40 bg-rose-500/10 px-2 py-1.5 space-y-1">
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-rose-300">
+              <span className="font-mono uppercase text-[10px]">Needs manual</span>
+              {item.deepReview.escalatedReason&&<span>Reason: {item.deepReview.escalatedReason}</span>}
+              <span>Attempts: {Math.max(item.deepReview.invalidAttempts||0,item.deepReview.retries||0,trace?.escalation?.attempts||1)}</span>
+              {trace?.escalation?.category&&<span>Category: {trace.escalation.category}</span>}
+              {item.deepReview.objectiveId&&<span>Objective #{item.deepReview.objectiveId}</span>}
+            </div>
+            {(trace?.escalation?.recommendedActions?.length||item.deepReview.escalation?.recommended_actions?.length)&&<div className="text-[10px] text-rose-200/80">Safe follow-ons: {[...(item.deepReview.escalation?.recommended_actions||[]),...(trace?.escalation?.recommendedActions||[])].filter((value,index,all)=>all.indexOf(value)===index).join(' · ')}</div>}
+            {trace?.escalation?.summary&&<div className="text-[10px] text-rose-200/70">{trace.escalation.summary}</div>}
           </div>}
           {item.deepReview.error&&<div className="text-destructive">{item.deepReview.error}</div>}
           {(()=>{const result=item.deepReview.result as {quality_score?:number;audit_status_recommendation?:string;primary_capability?:string;confidence?:string}|null;return result&&typeof result==='object'?(<div className="text-muted-foreground">Result: score {result.quality_score??'—'} · {result.audit_status_recommendation??'—'} · {result.primary_capability??'—'} {result.confidence??''}</div>):null})()}
