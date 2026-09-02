@@ -275,10 +275,42 @@ An evidence scan of every live definition (18 Gamut + 7 Hermes) found no
 curation authorship: QA synthesizes verification evidence, the Chief of Staff
 synthesizes cross-agent work, and the Architect documents project architecture
 — none author AgentOS reference packs. So reconciliation propagates **zero**
-new capabilities (verified live: no false positives), M1–M5 stay unrouted, and
-the correct next step is a dedicated native-format knowledge-curation
-specialist definition (proposed in the report; not fabricated, not written to
-the live host without confirmation).
+new capabilities (verified live: no false positives) until a dedicated
+native-format curator definition exists.
+
+### Live curator specialist (registered)
+
+A real Gamut/SuperAgent definition — **Knowledge & Technical Synthesis
+Specialist** (slug `p40nnujai8`, `C:\Users\KazeK\AppData\Roaming\Superagent\agents\p40nnujai8\workspace\CLAUDE.md`)
+— owns curation of approved reference material into reusable knowledge packs
+(cross-source synthesis, technical writing, documentation architecture,
+source-attributed reference authoring) and explicitly disclaims gameplay/
+combat/tactical/enemy-AI implementation ownership. The evidence-based parser
+infers `knowledge-curation` (+ `research`, `knowledge-management`-adjacent
+`documentation`, `architecture`, `testing-review`) and rejects
+tactical-encounters/enemy-ai/combat-systems — verified live against the file
+itself, no parser changes.
+
+Roster reconciliation then took the live roster **25 → 26**: the curator was
+registered (`agents` row, stable `agentos:gamut:…` identity) and bound to
+AgentOS Operations (project 8) through the guarded binding path (binding 32,
+capability snapshot `["architecture","testing-review","research","knowledge-curation","documentation"]`).
+The pack-mission specs were also corrected so the required execution role is
+`knowledge-curation` only and domain expertise (`tactical-encounters`, …) is
+**preferred**, not required — a general curator must be routable for any pack;
+the domain comes from approved Arsenal resources (Wesnoth/OXCE) and
+preferred-capability scoring, never from the curator pretending to be a
+tactical implementation specialist. A `refreshSuiteMissionCapabilityMetadata`
+helper heals already-created suite tasks to the current spec.
+
+Result on Objective 1: **M1–M5 (tasks 9–13) routed** to the curator proxy
+(`assigned`, required `[knowledge-curation]`, per-mission preferred sets
+preserved — M5 keeps `enemy-ai` preferred, M6 keeps `testing-review`/`qa-release`
+preferred); M6 stays `backlog` dependency-gated. The regenerated execution
+preview shows M1–M5 **UNKNOWN_COST** (no model/provider evidence in the
+definition — truthful, not FREE_LOCAL), M6 BLOCKED (unassigned), approval
+required. **Nothing dispatched**: 0 delegations, 0 approvals, 0
+`in_progress` tasks.
 
 ## Deferred
 

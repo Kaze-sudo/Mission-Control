@@ -81,8 +81,13 @@ export const KNOWLEDGE_PACK_SPECS: KnowledgePackSpec[] = [
     packId: 'kp-tactical-encounter-design-patterns',
     missionTitle: 'Curate: tactical-encounter-design-patterns',
     file: 'tactical-encounter-design-patterns.md',
-    requiredCapabilities: [KNOWLEDGE_CURATION_CAPABILITY, 'tactical-encounters'],
-    preferredCapabilities: ['architecture', 'game-development', 'narrative-content'],
+    // The REQUIRED execution role is knowledge-curation. Domain expertise is
+    // PREFERRED, never required: a general curator must be routable for any
+    // pack — the domain comes from approved Arsenal resources (Wesnoth/OXCE)
+    // and preferred-capability scoring, not from the curator pretending to be
+    // a tactical implementation specialist.
+    requiredCapabilities: [KNOWLEDGE_CURATION_CAPABILITY],
+    preferredCapabilities: ['tactical-encounters', 'architecture', 'game-development', 'narrative-content'],
     referenceResourceIds: ['res-tactical-oxce-reference'],
     coverage: [
       'encounter lifecycle', 'setup', 'tactical state', 'victory/defeat', 'map/scenario boundaries',
@@ -95,8 +100,8 @@ export const KNOWLEDGE_PACK_SPECS: KnowledgePackSpec[] = [
     packId: 'kp-deployment-and-spawn-schemas',
     missionTitle: 'Curate: deployment-and-spawn-schemas',
     file: 'deployment-and-spawn-schemas.md',
-    requiredCapabilities: [KNOWLEDGE_CURATION_CAPABILITY, 'tactical-encounters'],
-    preferredCapabilities: ['game-development', 'turn-state-engine', 'save-data-tools'],
+    requiredCapabilities: [KNOWLEDGE_CURATION_CAPABILITY],
+    preferredCapabilities: ['tactical-encounters', 'game-development', 'turn-state-engine', 'save-data-tools'],
     referenceResourceIds: ['res-tactical-oxce-reference', 'res-tactical-boardgame-io'],
     coverage: [
       'player deployment', 'enemy deployment', 'deployment zones', 'start locations', 'spawn tables',
@@ -109,8 +114,8 @@ export const KNOWLEDGE_PACK_SPECS: KnowledgePackSpec[] = [
     packId: 'kp-terrain-and-movement-models',
     missionTitle: 'Curate: terrain-and-movement-models',
     file: 'terrain-and-movement-models.md',
-    requiredCapabilities: [KNOWLEDGE_CURATION_CAPABILITY, 'tactical-encounters'],
-    preferredCapabilities: ['game-development', 'architecture', 'combat-systems'],
+    requiredCapabilities: [KNOWLEDGE_CURATION_CAPABILITY],
+    preferredCapabilities: ['tactical-encounters', 'game-development', 'architecture', 'combat-systems'],
     referenceResourceIds: ['res-tactical-oxce-reference'],
     coverage: [
       'grids/hexes', 'movement costs', 'terrain modifiers', 'blocked tiles', 'traversal', 'pathing',
@@ -123,8 +128,8 @@ export const KNOWLEDGE_PACK_SPECS: KnowledgePackSpec[] = [
     packId: 'kp-scenario-objective-patterns',
     missionTitle: 'Curate: scenario-objective-patterns',
     file: 'scenario-objective-patterns.md',
-    requiredCapabilities: [KNOWLEDGE_CURATION_CAPABILITY, 'tactical-encounters'],
-    preferredCapabilities: ['narrative-content', 'architecture', 'game-development'],
+    requiredCapabilities: [KNOWLEDGE_CURATION_CAPABILITY],
+    preferredCapabilities: ['tactical-encounters', 'narrative-content', 'architecture', 'game-development'],
     referenceResourceIds: ['res-tactical-oxce-reference'],
     coverage: [
       'scenario definitions', 'objectives', 'optional objectives', 'victory', 'defeat', 'turn limits',
@@ -137,8 +142,8 @@ export const KNOWLEDGE_PACK_SPECS: KnowledgePackSpec[] = [
     packId: 'kp-tactical-ai-reference',
     missionTitle: 'Curate: tactical-ai-reference',
     file: 'tactical-ai-reference.md',
-    requiredCapabilities: [KNOWLEDGE_CURATION_CAPABILITY, 'tactical-encounters'],
-    preferredCapabilities: ['enemy-ai', 'game-development', 'architecture'],
+    requiredCapabilities: [KNOWLEDGE_CURATION_CAPABILITY],
+    preferredCapabilities: ['tactical-encounters', 'enemy-ai', 'game-development', 'architecture'],
     referenceResourceIds: ['res-tactical-oxce-reference'],
     coverage: [
       'tactical decision layers', 'movement/positioning', 'target selection', 'threat evaluation',
@@ -151,8 +156,8 @@ export const KNOWLEDGE_PACK_SPECS: KnowledgePackSpec[] = [
     packId: 'kp-suite-validation',
     missionTitle: 'Validate Tactical Knowledge Pack Suite',
     file: 'suite-validation-report.md',
-    requiredCapabilities: [KNOWLEDGE_CURATION_CAPABILITY, 'testing-review'],
-    preferredCapabilities: ['qa-release', 'knowledge-management', 'architecture'],
+    requiredCapabilities: [KNOWLEDGE_CURATION_CAPABILITY],
+    preferredCapabilities: ['testing-review', 'qa-release', 'knowledge-management', 'architecture'],
     referenceResourceIds: [],
     coverage: [
       'format consistency', 'no unsupported claims', 'no large copyrighted source reproduction',
@@ -1527,6 +1532,68 @@ export function applyKnowledgeCurationEscalationPolicy(rootInput?: string): {
 // Reconcile (runs from the scheduler alongside other AgentOS reconciles)
 // ---------------------------------------------------------------------------
 
+/**
+ * Refresh capability requirements on existing suite mission tasks from the
+ * current KNOWLEDGE_PACK_SPECS (spec versioning). Suite objectives created
+ * before a spec change keep working: their metadata heals to the versioned
+ * contract instead of being hand-edited. No-op when already aligned.
+ */
+export function refreshSuiteMissionCapabilityMetadata(input: {
+  workspaceId?: number
+  actor?: string | null
+}): { refreshed: number } {
+  const db = getDatabase()
+  const wsFilter = Number.isInteger(input.workspaceId)
+    ? 'AND workspace_id = ?'
+    : ''
+  const args: Array<number> = Number.isInteger(input.workspaceId) ? [input.workspaceId as number] : []
+  const rows = db.prepare(`
+    SELECT id, workspace_id, plan_json FROM agentos_objectives
+    WHERE plan_json LIKE '%"agentos_knowledge_suite"%' ${wsFilter}
+    ORDER BY id DESC LIMIT 50
+  `).all(...args) as Array<{ id: number; workspace_id: number; plan_json: string }>
+  let refreshed = 0
+  for (const row of rows) {
+    let plan: Record<string, any>
+    try { plan = JSON.parse(row.plan_json) } catch { continue }
+    const suite = plan.agentos_knowledge_suite
+    if (!suite || !Array.isArray(suite.missions)) continue
+    for (const mission of suite.missions) {
+      const taskId = Number(mission.task_id)
+      if (!Number.isInteger(taskId)) continue
+      const spec = PACK_BY_KEY.get(String(mission.key))
+      if (!spec) continue
+      const taskRow = db.prepare('SELECT metadata FROM tasks WHERE id = ? AND workspace_id = ?')
+        .get(taskId, row.workspace_id) as { metadata: string | null } | undefined
+      if (!taskRow) continue
+      const metadata = parseMetadata(taskRow.metadata)
+      const agentos = metadata.agentos && typeof metadata.agentos === 'object' ? metadata.agentos as Record<string, unknown> : {}
+      const currentRequired = Array.isArray(agentos.requiredCapabilities) ? agentos.requiredCapabilities : []
+      const currentPreferred = Array.isArray(agentos.preferredCapabilities) ? agentos.preferredCapabilities : []
+      const nextRequired = spec.requiredCapabilities
+      const nextPreferred = spec.preferredCapabilities
+      const requiredSame = JSON.stringify(currentRequired) === JSON.stringify(nextRequired)
+      const preferredSame = JSON.stringify(currentPreferred) === JSON.stringify(nextPreferred)
+      if (requiredSame && preferredSame) continue
+      agentos.requiredCapabilities = nextRequired
+      agentos.preferredCapabilities = nextPreferred
+      metadata.agentos = agentos
+      db.prepare('UPDATE tasks SET metadata = ?, updated_at = ? WHERE id = ? AND workspace_id = ?')
+        .run(JSON.stringify(metadata), Math.floor(Date.now() / 1000), taskId, row.workspace_id)
+      refreshed++
+    }
+  }
+  if (refreshed > 0) {
+    db_helpers.logActivity(
+      'agentos_knowledge_suite_requirements_refreshed', 'workspace', input.workspaceId ?? 0, input.actor || 'agentos',
+      `Refreshed capability requirements on ${refreshed} suite mission task(s) to the current spec`,
+      { refreshed },
+      input.workspaceId ?? 0,
+    )
+  }
+  return { refreshed }
+}
+
 export function reconcileKnowledgeCuration(rootInput?: string): {
   ok: boolean
   message: string
@@ -1539,6 +1606,9 @@ export function reconcileKnowledgeCuration(rootInput?: string): {
 } {
   const root = rootInput || config.aiVaultRoot
   const db = getDatabase()
+  // Version the mission contract: existing suite tasks heal to the current
+  // KNOWLEDGE_PACK_SPECS (required execution role vs preferred domains).
+  refreshSuiteMissionCapabilityMetadata({ actor: 'agentos' })
   const tasks = db.prepare(
     `SELECT id, workspace_id, metadata FROM tasks WHERE metadata LIKE '%"agentos_knowledge_curation"%' ORDER BY id`,
   ).all() as Array<{ id: number; workspace_id: number; metadata: string | null }>
