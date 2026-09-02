@@ -259,6 +259,27 @@ classify `UNKNOWN_COST` (no model/provider evidence in the definitions), so
 they can never dispatch without an explicit approval, and none ever will
 under the default policy.
 
+## Knowledge-curation ownership (evidence-based)
+
+The suite objective's M1–M6 require the `knowledge-curation` capability, and
+routing stays honest: no specialist receives it unless their definition
+explicitly authors reference material. `inferCapabilityTags`
+(`global-agent-roster.ts`) treats knowledge-curation as **authoring-only** —
+curated knowledge packs, reference material/guides, technical writing,
+documentation architecture, pattern catalogs, cross-source synthesis qualify;
+generic intelligence, single documentation mentions, README/docs work, or
+synthesis of ordinary project/release evidence never do (locked by unit
+tests). Affinity in `agent-selection.ts` mirrors the same ownership language.
+
+An evidence scan of every live definition (18 Gamut + 7 Hermes) found no
+curation authorship: QA synthesizes verification evidence, the Chief of Staff
+synthesizes cross-agent work, and the Architect documents project architecture
+— none author AgentOS reference packs. So reconciliation propagates **zero**
+new capabilities (verified live: no false positives), M1–M5 stay unrouted, and
+the correct next step is a dedicated native-format knowledge-curation
+specialist definition (proposed in the report; not fabricated, not written to
+the live host without confirmation).
+
 ## Deferred
 
 The five knowledge packs are now the real M1–M5 of the suite objective above;

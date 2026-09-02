@@ -91,7 +91,12 @@ const CAPABILITY_KEYWORDS: Array<[RegExp, string]> = [
   [/playtest|release verification|quality assurance|regression|acceptance/i, 'qa-release'],
   [/estimating|takeoff|pricebook|xactimate|freebuff|material quantities/i, 'construction-estimating'],
   [/deep review|resource review|arsenal|registry audit|resource audit|curator/i, 'resource-deep-review'],
-  [/knowledge curation|knowledge pack|knowledge base pack|curate knowledge|curate reference|technical writing|reference material|pack suite/i, 'knowledge-curation'],
+  // knowledge-curation is AUTHORING-ONLY: it must not be inferred from generic
+  // intelligence, single documentation mentions, or synthesis of ordinary work
+  // (release evidence, project status). Only explicit reference-authoring
+  // ownership — curated knowledge packs, reference material/guides, technical
+  // writing, documentation architecture, cross-source synthesis — qualifies.
+  [/knowledge curation|knowledge pack|knowledge base (pack|maintenance|curat)|curat(?:e|or|es|ing) (?:approved |agentos )?(?:knowledge|reference)|reference (?:material|library|guide|manual)|technical (?:writer|writing)|documentation architec(?:t|ture)|pattern (?:catalog|library)|cross-source (?:synthesis|synthesi[sz]e|reference)/i, 'knowledge-curation'],
   [/jobs|clients|schedules|crews|subcontractors|suppliers|job packets/i, 'construction-operations'],
   [/document|docs|writer/i, 'documentation'],
 ]
@@ -106,6 +111,18 @@ function parseConfig(raw: string | null): Record<string, unknown> {
   }
 }
 
+/**
+ * Pure capability inference over a specialist's role + identity text. Exported
+ * so ownership rules are unit-testable without touching the filesystem.
+ * Declared capabilities (config.agentos.capabilities) remain authoritative and
+ * are handled by capabilitiesFor before this runs.
+ */
+export function inferCapabilityTags(role: string, identity = ''): string[] {
+  const haystack = `${role}\n${identity}`
+  const tags = CAPABILITY_KEYWORDS.filter(([pattern]) => pattern.test(haystack)).map(([, tag]) => tag)
+  return [...new Set(tags)]
+}
+
 function capabilitiesFor(role: string, config: Record<string, unknown>, identity = ''): CapabilityProfile {
   const agentos = config.agentos && typeof config.agentos === 'object'
     ? config.agentos as Record<string, unknown>
@@ -116,9 +133,8 @@ function capabilitiesFor(role: string, config: Record<string, unknown>, identity
     if (tags.length > 0) return { tags: [...new Set(tags.map(tag => tag.trim().toLowerCase()))], source: 'declared' }
   }
 
-  const haystack = `${role}\n${identity}`
-  const tags = CAPABILITY_KEYWORDS.filter(([pattern]) => pattern.test(haystack)).map(([, tag]) => tag)
-  return tags.length > 0 ? { tags: [...new Set(tags)], source: 'inferred' } : { tags: [], source: 'unrated' }
+  const tags = inferCapabilityTags(role, identity)
+  return tags.length > 0 ? { tags, source: 'inferred' } : { tags: [], source: 'unrated' }
 }
 
 function readIdentity(agentPath: string): string {

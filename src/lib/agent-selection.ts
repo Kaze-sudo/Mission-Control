@@ -39,7 +39,7 @@ const SPECIALIST_AFFINITY: Array<[string, RegExp]> = [
   ['multiplayer-networking', /multiplayer|online/i],
   ['qa-release', /qa|playtest|release verification/i],
   ['resource-deep-review', /deep reviewer|resource reviewer|arsenal|resource auditor|curator/i],
-  ['knowledge-curation', /knowledge curator|knowledge pack|curation specialist|technical writer|reference material|documentation architect/i],
+  ['knowledge-curation', /knowledge (curator|manager|pack)|curation specialist|technical writer|documentation architect|reference (material|guide|library) owner/i],
   ['construction-estimating', /estimating|estimator|takeoff/i],
 ]
 
