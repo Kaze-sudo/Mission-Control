@@ -43,8 +43,9 @@ interface ArsenalKnowledgeMission {
   missions: ArsenalKnowledgeMission[]
 }
 type ExecCostClass = 'FREE_LOCAL'|'FREE_REMOTE'|'PAID_KNOWN'|'PAID_ESTIMATED'|'UNKNOWN_COST'|'MANUAL_EXTERNAL'|'BLOCKED'
-interface ExecPlanMission { taskId:number; missionKey:string; title:string; status:string; assignedTo:string|null; platoon:string|null; specialist:string|null; runtimeType:string|null; provider:string|null; model:string|null; costClass:ExecCostClass; estimatedCost:number|null; costBasis:string; requiresApproval:boolean; dependencies:string[]; resources:Array<{resourceId:string;name:string;manualOnly?:boolean}>; runtimeAccess:string; warnings:string[] }
-interface ExecPlan { planId:string; objectiveId:number; projectId:number; workspaceId:number; createdAt:string; status:string; missions:ExecPlanMission[]; summary:{ freeMissions:number; paidMissions:number; unknownCostMissions:number; blockedMissions:number; approvalRequired:boolean; waves:string[][] }; fingerprint:string }
+interface ExecPlanMission { taskId:number; missionKey:string; title:string; status:string; assignedTo:string|null; platoon:string|null; specialist:string|null; runtimeType:string|null; provider:string|null; model:string|null; modelResolved:string|null; pricingSource:string|null; costClass:ExecCostClass; estimatedCost:number|null; estimatedInputTokens:number|null; estimatedOutputTokens:number|null; maximumAuthorizedInputTokens:number|null; maximumAuthorizedOutputTokens:number|null; maximumCostPerAttempt:number|null; maxAttempts:number|null; maximumMissionExposure:number|null; retriesIncluded:boolean; costBasis:string; requiresApproval:boolean; dependencies:string[]; resources:Array<{resourceId:string;name:string;manualOnly?:boolean}>; runtimeAccess:string; warnings:string[] }
+interface ExecPlanBudget { currency:'USD'; estimatedCost:number|null; maximumAuthorizedCost:number|null; spentSoFar:number; remainingAuthorized:number|null }
+interface ExecPlan { planId:string; objectiveId:number; projectId:number; workspaceId:number; createdAt:string; status:string; missions:ExecPlanMission[]; summary:{ freeMissions:number; paidMissions:number; unknownCostMissions:number; blockedMissions:number; approvalRequired:boolean; waves:string[][]; estimatedTotalCost:number|null; maximumTotalExposure:number|null }; budget:ExecPlanBudget; fingerprint:string }
 interface ExecApproval { id:number; approvalId:string; objectiveId:number; projectId:number; workspaceId:number; approvedBy:string; approvedAt:number; approvedTaskIds:number[]; excludedTaskIds:number[]; fingerprint:string; maxAuthorizedAmount:number|null; expiresAt:number|null; createdAt:number }
 interface ArsenalState {
   registry: { resources: ArsenalResource[]; overlapGroups: Array<{capability:string;preferredId:string;candidateIds:string[]}>; summary:{ total:number; keep:number } } | null
@@ -88,6 +89,7 @@ export function ProjectCommandPanel() {
   const [execPlan,setExecPlan]=useState<ExecPlan|null>(null)
   const [execApproval,setExecApproval]=useState<ExecApproval|null>(null)
   const [execApprovalStatus,setExecApprovalStatus]=useState<'NONE'|'VALID'|'STALE'|'EXPIRED'>('NONE')
+  const [execBudgetInput,setExecBudgetInput]=useState<string>('')
   const [execSelected,setExecSelected]=useState<Set<number>>(new Set())
   const [execBusy,setExecBusy]=useState(false)
   const [roster,setRoster]=useState<RosterAgent[]>([])
@@ -461,8 +463,14 @@ export function ProjectCommandPanel() {
                 <select value={execObjectiveId??''} onChange={e=>{setExecObjectiveId(e.target.value?Number(e.target.value):null);setExecPlan(null);setExecApproval(null);setExecApprovalStatus('NONE');setExecSelected(new Set())}} className="rounded-md border border-border bg-background px-3 py-2 text-sm"><option value="">Objective…</option>{objectives.map(o=><option key={o.id} value={o.id}>{o.title} (#{o.id})</option>)}</select>
                 <Button size="sm" variant="outline" disabled={execBusy||!execObjectiveId} onClick={()=>void runExecAction('preview',execObjectiveId!)}>{execBusy?'Working…':'Generate Preview'}</Button>
                 <Button size="sm" variant="outline" disabled={execBusy||!execObjectiveId||!execPlan} onClick={()=>void runExecAction('refresh',execObjectiveId!)}>Refresh Plan</Button>
-                {execPlan&&<Button size="sm" disabled={execBusy||!execPlan.summary.approvalRequired} onClick={()=>void runExecAction('approve',execObjectiveId!,{approveTaskIds:'all-eligible'})}>Approve All Eligible</Button>}
-                {execPlan&&<Button size="sm" variant="outline" disabled={execBusy||execSelected.size===0} onClick={()=>void runExecAction('approve',execObjectiveId!,{approveTaskIds:[...execSelected]})}>Approve Selected ({execSelected.size})</Button>}
+                {execPlan&&execPlan.summary.approvalRequired&&<>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-muted-foreground">Max spend $</span>
+                    <input type="number" min="0" step="0.01" value={execBudgetInput} onChange={e=>setExecBudgetInput(e.target.value)} placeholder="budget" className="w-24 rounded-md border border-border bg-background px-2 py-1.5 text-sm" title="Hard whole-plan ceiling. No mission may start if its maximum possible exposure would exceed the remaining budget."/>
+                  </div>
+                  <Button size="sm" disabled={execBusy||!execPlan.summary.approvalRequired} onClick={()=>void runExecAction('approve',execObjectiveId!,{approveTaskIds:'all-eligible',maxAuthorizedAmount:execBudgetInput!==''?Number(execBudgetInput):undefined})}>Approve All Within Budget</Button>
+                  <Button size="sm" variant="outline" disabled={execBusy||execSelected.size===0} onClick={()=>void runExecAction('approve',execObjectiveId!,{approveTaskIds:[...execSelected],maxAuthorizedAmount:execBudgetInput!==''?Number(execBudgetInput):undefined})}>Approve Selected ({execSelected.size})</Button>
+                </>}
                 {execPlan&&<Button size="sm" variant="ghost" disabled={execBusy} onClick={()=>void runExecAction('deny',execObjectiveId!,{reason:'User held execution from Project Command'})}>Deny / Hold</Button>}
               </div>
             </div>
@@ -477,6 +485,18 @@ export function ProjectCommandPanel() {
                 <MiniMetric label="Blocked" value={execPlan.summary.blockedMissions}/>
                 <div className="rounded-lg bg-secondary/40 p-3"><div className="text-xl font-semibold">{execPlan.summary.approvalRequired?'REQUIRED':'NONE'}</div><div className="text-[10px] uppercase tracking-wider text-muted-foreground">Approval</div></div>
               </div>
+              {execPlan.summary.estimatedTotalCost!==null&&<div className="rounded-lg border border-border/50 bg-background/40 p-3 text-xs">
+                <div className="flex flex-wrap gap-x-6 gap-y-1 text-muted-foreground">
+                  <span>Est. total (M1–M6): <b className="text-foreground">${execPlan.summary.estimatedTotalCost.toFixed(2)}</b></span>
+                  <span>Max exposure (ceilings × retries): <b className="text-foreground">${execPlan.summary.maximumTotalExposure!.toFixed(2)}</b></span>
+                  {execPlan.budget.maximumAuthorizedCost!==null&&<>
+                    <span>Budget authorized: <b className="text-foreground">${execPlan.budget.maximumAuthorizedCost.toFixed(2)}</b></span>
+                    <span>Spent so far: <b className="text-foreground">${execPlan.budget.spentSoFar.toFixed(2)}</b></span>
+                    <span>Remaining: <b className="text-foreground">${execPlan.budget.remainingAuthorized!.toFixed(2)}</b></span>
+                  </>}
+                </div>
+                <div className="text-[10px] text-muted-foreground/70 mt-1">Estimates use resolved model pricing (live OpenRouter metadata when available). The budget is a HARD guard enforced at dispatch: exposure beyond remaining authorized stays held — no mission starts.</div>
+              </div>}
               <div className="max-h-[26rem] overflow-auto space-y-2 pr-1">
                 {execPlan.missions.map(mission=>{
                   const tone=mission.costClass==='FREE_LOCAL'?'bg-emerald-500/15 text-emerald-400':mission.costClass==='FREE_REMOTE'?'bg-sky-500/15 text-sky-400':mission.costClass==='PAID_KNOWN'||mission.costClass==='PAID_ESTIMATED'?'bg-rose-500/15 text-rose-400':mission.costClass==='BLOCKED'?'bg-red-500/15 text-red-400':'bg-amber-500/15 text-amber-300'
@@ -490,7 +510,8 @@ export function ProjectCommandPanel() {
                         {approved&&<span className="text-[10px] text-emerald-400">✓ approved</span>}
                       </div>
                     </div>
-                    <div className="text-[10px] text-muted-foreground mt-1.5">{mission.dependencies.length?`deps: ${mission.dependencies.map(d=>d.toUpperCase()).join(' ')} · `:''}{mission.runtimeAccess||'unassigned'} · specialist {mission.specialist||'—'}{mission.provider?` · ${mission.provider}${mission.model?`/${mission.model}`:''}`:''}{mission.estimatedCost!==null?` · est ${mission.estimatedCost}`:''}</div>
+                    <div className="text-[10px] text-muted-foreground mt-1.5">{mission.dependencies.length?`deps: ${mission.dependencies.map(d=>d.toUpperCase()).join(' ')} · `:''}{mission.runtimeAccess||'unassigned'} · specialist {mission.specialist||'—'}{mission.provider?` · ${mission.provider}${mission.modelResolved?`/${mission.modelResolved}`:(mission.model?`/${mission.model}`:'')}`:''}</div>
+                    {mission.estimatedCost!==null&&mission.maximumMissionExposure!==null&&<div className="text-[10px] text-muted-foreground mt-1">est ${mission.estimatedCost.toFixed(2)} · per-attempt ceiling ${mission.maximumCostPerAttempt!.toFixed(2)} · exposure (×{mission.maxAttempts}{mission.retriesIncluded?' incl. retries':''}) ${mission.maximumMissionExposure.toFixed(2)}{mission.estimatedInputTokens&&mission.estimatedOutputTokens?` · ~${(mission.estimatedInputTokens/1000).toFixed(0)}k in / ${(mission.estimatedOutputTokens/1000).toFixed(0)}k out tokens`:''}{mission.pricingSource?` · pricing: ${mission.pricingSource}`:''}</div>}
                     {mission.resources.length>0&&<div className="text-[10px] text-muted-foreground mt-1">resources: {mission.resources.map(r=>r.resourceId+(r.manualOnly?' (manual)':'')).join(', ')}</div>}
                     <div className="text-[10px] text-muted-foreground/70 mt-1">basis: {mission.costBasis}</div>
                     {mission.warnings.length>0&&<div className="text-[10px] text-amber-400/80 mt-1">{mission.warnings.join(' · ')}</div>}

@@ -11,6 +11,7 @@ import { eventBus } from './event-bus'
 import { syncSkillsFromDisk } from './skill-sync'
 import { syncLocalAgents } from './local-agent-sync'
 import { registerRosterAgents } from './agent-roster-sync'
+import { refreshOpenRouterPricing } from './model-pricing'
 import { dispatchAssignedTasks, runAegisReviews, requeueStaleTasks, autoRouteInboxTasks, reconcileDeferredTaskCompletions } from './task-dispatch'
 import { reconcileDeepReviewMissions } from './resource-deep-review'
 import { reconcileKnowledgeCuration } from './knowledge-curation'
@@ -402,6 +403,15 @@ export function initScheduler() {
     running: false,
   })
 
+  tasks.set('agentos_pricing_sync', {
+    name: 'AgentOS Model Pricing Sync',
+    intervalMs: 6 * 60 * 60 * 1000, // Every 6h — refresh OpenRouter pricing cache (TTL-cached, never blocks planning)
+    lastRun: null,
+    nextRun: now + 90_000, // First refresh 90s after startup
+    enabled: true,
+    running: false,
+  })
+
   tasks.set('task_dispatch', {
     name: 'Task Dispatch',
     intervalMs: TICK_MS, // Every 60s — check for assigned tasks to dispatch
@@ -470,12 +480,13 @@ async function tick() {
       : id === 'local_agent_sync' ? 'general.local_agent_sync'
       : id === 'gateway_agent_sync' ? 'general.gateway_agent_sync'
       : id === 'agentos_roster_sync' ? 'general.agentos_roster_sync'
+      : id === 'agentos_pricing_sync' ? 'general.agentos_pricing_sync'
       : id === 'task_dispatch' ? 'general.task_dispatch'
       : id === 'aegis_review' ? 'general.aegis_review'
       : id === 'recurring_task_spawn' ? 'general.recurring_task_spawn'
       : id === 'stale_task_requeue' ? 'general.stale_task_requeue'
       : 'general.agent_heartbeat'
-    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'agentos_roster_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue'
+    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'agentos_roster_sync' || id === 'agentos_pricing_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue'
     if (!isSettingEnabled(settingKey, defaultEnabled)) continue
 
     task.running = true
@@ -487,6 +498,7 @@ async function tick() {
         : id === 'skill_sync' ? await syncSkillsFromDisk()
         : id === 'local_agent_sync' ? await syncLocalAgents()
         : id === 'agentos_roster_sync' ? runAgentosRosterRegistration()
+        : id === 'agentos_pricing_sync' ? await runAgentosPricingRefresh()
         : id === 'gateway_agent_sync' ? await syncAgentsFromConfig('scheduled').then(async r => {
             if (r.error) return { ok: false, message: r.error }
             const refreshed = await syncAgentLiveStatuses()
@@ -539,12 +551,13 @@ export function getSchedulerStatus() {
       : id === 'local_agent_sync' ? 'general.local_agent_sync'
       : id === 'gateway_agent_sync' ? 'general.gateway_agent_sync'
       : id === 'agentos_roster_sync' ? 'general.agentos_roster_sync'
+      : id === 'agentos_pricing_sync' ? 'general.agentos_pricing_sync'
       : id === 'task_dispatch' ? 'general.task_dispatch'
       : id === 'aegis_review' ? 'general.aegis_review'
       : id === 'recurring_task_spawn' ? 'general.recurring_task_spawn'
       : id === 'stale_task_requeue' ? 'general.stale_task_requeue'
       : 'general.agent_heartbeat'
-    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'agentos_roster_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue'
+    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'agentos_roster_sync' || id === 'agentos_pricing_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue'
     result.push({
       id,
       name: task.name,
@@ -557,6 +570,18 @@ export function getSchedulerStatus() {
   }
 
   return result
+}
+
+/** Pricing cache refresh (Phase 3) — never blocks planning; failures are silent. */
+async function runAgentosPricingRefresh(): Promise<{ ok: boolean; message: string }> {
+  try {
+    const result = await refreshOpenRouterPricing()
+    return result.refreshed
+      ? { ok: true, message: `Pricing cache refreshed: ${result.matched} OpenRouter models` }
+      : { ok: false, message: `Pricing refresh unavailable: ${result.error || 'no models returned'}` }
+  } catch (error) {
+    return { ok: false, message: `Pricing refresh failed: ${error instanceof Error ? error.message : 'unknown error'}` }
+  }
 }
 
 /** Registration-only roster sync (delta-guarded; no-op when nothing changed). */

@@ -1838,6 +1838,35 @@ const migrations: Migration[] = [
           ON agentos_execution_approvals(objective_id, workspace_id, created_at DESC);
       `)
     }
+  },
+  {
+    id: '066_agentos_execution_costs',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agentos_execution_costs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          objective_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          task_id INTEGER,
+          delegation_id TEXT,
+          plan_id TEXT,
+          approval_id TEXT,
+          kind TEXT NOT NULL
+            CHECK(kind IN ('reserved','released','actual')),
+          amount REAL NOT NULL DEFAULT 0,
+          currency TEXT NOT NULL DEFAULT 'USD',
+          input_tokens INTEGER,
+          output_tokens INTEGER,
+          provider_generation_id TEXT,
+          note TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (objective_id) REFERENCES agentos_objectives(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_execution_costs_objective
+          ON agentos_execution_costs(objective_id, workspace_id, kind, created_at);
+      `)
+    }
   }
 ]
 

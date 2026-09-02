@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { getDatabase, db_helpers } from './db'
+import { releaseReservationForTask } from './execution-authorization'
 
 export type AgentOSDelegationStatus =
   | 'claimed'
@@ -202,6 +203,16 @@ export function updateDelegation(
     id,
     workspaceId,
   )
+
+  // Budget guard: a terminal delegation releases its reservation so committed
+  // spend reflects reality (Phase 9/10). Never throws.
+  if (status === 'completed' || status === 'failed') {
+    try {
+      releaseReservationForTask(current.taskId, workspaceId)
+    } catch {
+      // release must never break delegation updates
+    }
+  }
 
   return getDelegation(id, workspaceId)
 }

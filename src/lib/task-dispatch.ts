@@ -21,7 +21,7 @@ import { runGamutAgent } from './gamut-host'
 import { checkAgentOSDispatchGuard } from './project-command'
 import { promoteReadyObjectiveMissions, reconcileObjectiveStatuses } from './objective-planning'
 import { createDelegationForTask, getLatestDelegationForTask, updateDelegation } from './delegation-ledger'
-import { authorizeAgentOSTaskDispatch } from './execution-authorization'
+import { authorizeAgentOSTaskDispatch, missionMaximumExposure, reserveMissionCost, releaseReservationForTask } from './execution-authorization'
 import { isAgentOSGatedTask, objectiveIdFromTaskMetadata } from './execution-planning'
 import type Database from 'better-sqlite3'
 
@@ -2029,6 +2029,29 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
           attempt: (task.dispatch_attempts || 0) + 1,
         })
         delegationId = delegation.id
+
+        // Budget guard reservation (Phase 7): once a cost-bearing AgentOS
+        // mission is claimed, reserve its maximum authorized exposure so the
+        // objective budget tracks committed spend. Never breaks dispatch.
+        try {
+          const objectiveId = objectiveIdFromTaskMetadata(task.metadata)
+          if (objectiveId !== null && executionAuth.costClass && executionAuth.costClass !== 'FREE_LOCAL') {
+            const exposure = missionMaximumExposure(objectiveId, task.id, task.workspace_id, db)
+            if (exposure !== null && exposure > 0) {
+              reserveMissionCost({
+                objectiveId,
+                workspaceId: task.workspace_id,
+                taskId: task.id,
+                delegationId: delegation.id,
+                approvalId: executionAuth.approvalId ?? null,
+                amount: exposure,
+                note: 'reserved at dispatch claim (maximum mission exposure, retries included)',
+              }, db)
+            }
+          }
+        } catch {
+          // Reservation must never block dispatch.
+        }
       }
 
       // Check for previous Aegis rejection feedback

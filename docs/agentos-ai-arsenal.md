@@ -339,6 +339,38 @@ sonnet, approval required), M6 BLOCKED (unassigned), paid 5 / free 0 /
 unknown 0. **Nothing dispatched**: 0 delegations, 0 approvals, 0
 `in_progress` tasks.
 
+## Cost-bounded execution authorization
+
+The `sonnet` alias resolves to **`claude-sonnet-5`** (Gamut catalog:
+`family === alias && isLatest`), canonical OpenRouter id
+**`anthropic/claude-sonnet-5`** — verified in the installed host bundle
+(`dist/main/index.js` `pricingFor("claude-sonnet-5")` = 2/10/0.2/2.5 per 1M)
+and cross-checked against OpenRouter's live model metadata (same rates,
+1M context). `model-pricing.ts` fetches the public OpenRouter models endpoint
+(no auth, no secrets), persists a TTL-bounded cache under the data dir, and
+falls back to the embedded Gamut-catalog table only when live+cache are
+unavailable — lookup failure is never free, always PAID_ESTIMATED/unknown.
+`execution-planning.ts` attaches per-mission token envelopes (kind-scaled,
+~3× ceiling), dollar estimates, per-attempt ceilings and maximum exposures
+(retries included) to every mission, and a plan-level budget block; the
+fingerprint now covers model resolution, pricing source and exposure ceilings,
+so a material pricing/routing change stales approvals. `agentos_execution_costs`
+(migration 066) records reserved / released / actual entries; the dispatch
+claim reserves the mission exposure and terminal delegations release it.
+`authorizeAgentOSTaskDispatch` enforces the **hard budget guard**: no mission
+starts if its maximum possible authorized exposure exceeds the remaining
+objective budget (`agentos_execution_budget_held`). The Project Command
+Execution panel shows the resolved model, pricing source, estimates, exposure,
+and a **Max spend $** authorization control; approve actions carry the budget
+into the approval record.
+
+Live preview (objective 1, plan `exp-1-1`, fingerprint `e510e7e5`): M1–M5
+resolved to `claude-sonnet-5` with live OpenRouter pricing — **est. total
+$2.65, max exposure $23.85** (ceilings × 3 attempts, retries included); M6
+BLOCKED and excluded from the spend envelope. Budget not yet authorized, zero
+reservations, zero approvals, zero dispatch — waiting for the operator's
+dollar ceiling.
+
 ## Deferred
 
 The five knowledge packs are now the real M1–M5 of the suite objective above;

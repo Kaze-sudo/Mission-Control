@@ -13,6 +13,7 @@ import {
   denyExecutionPlan,
   latestApprovalForObjective,
   approvalStatusForPlan,
+  objectiveBudgetState,
 } from '@/lib/execution-authorization'
 
 function projectId(raw: string): number | null {
@@ -55,7 +56,8 @@ export async function GET(request: NextRequest, { params }: { params: Promise<{ 
     const approval = latestApprovalForObjective(objectiveId, workspaceId)
     const approvalStatus = approvalStatusForPlan(approval, plan)
     const stored = readExecutionPlanRow(objectiveId, workspaceId)
-    return NextResponse.json({ ok: true, plan, approval, approvalStatus, rowStatus: stored?.status ?? null })
+    const budget = objectiveBudgetState(objectiveId, workspaceId)
+    return NextResponse.json({ ok: true, plan, approval, approvalStatus, rowStatus: stored?.status ?? null, budget })
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Failed to build execution preview'
     return NextResponse.json({ error: message }, { status: 400 })
@@ -108,7 +110,8 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         return NextResponse.json({ ok: false, error: result.message, errors: result.errors || [] }, { status: 400 })
       }
       saveExecutionPlanRow(result.plan, result.partiallyApproved ? 'AWAITING_APPROVAL' : 'APPROVED')
-      return NextResponse.json({ ok: true, plan: result.plan, approval: result.approval, approvalStatus: 'VALID', result })
+      const budget = objectiveBudgetState(objectiveId, workspaceId)
+      return NextResponse.json({ ok: true, plan: result.plan, approval: result.approval, approvalStatus: 'VALID', result, budget })
     }
     if (action === 'deny') {
       const result = denyExecutionPlan({

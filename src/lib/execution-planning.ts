@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
 import { getDatabase } from './db'
+import { getModelPricing, type ModelPricing } from './model-pricing'
+import { resolveGamutModelAlias } from './gamut-host'
 
 /**
  * AgentOS execution planning — the PREVIEW → COST/RUNTIME RISK → APPROVAL →
@@ -291,14 +293,39 @@ export interface ExecutionPlanMission {
   runtimeType: string | null
   provider: string | null
   model: string | null
+  /** Concrete resolved model id (alias → catalog id, e.g. claude-sonnet-5). */
+  modelResolved: string | null
+  /** Where the price evidence came from (openrouter-live / gamut-catalog-fallback / null). */
+  pricingSource: string | null
   costClass: ExecutionCostClass
   estimatedCost: number | null
+  /** Cost envelope (Phase 4/5) — SAFE CEILINGS, not fake precision. */
+  estimatedInputTokens: number | null
+  estimatedOutputTokens: number | null
+  maximumAuthorizedInputTokens: number | null
+  maximumAuthorizedOutputTokens: number | null
+  maximumCostPerAttempt: number | null
+  maxAttempts: number | null
+  maximumMissionExposure: number | null
+  retriesIncluded: boolean
   costBasis: string
   requiresApproval: boolean
   dependencies: string[]
   resources: Array<{ resourceId: string; name: string; manualOnly?: boolean }>
   runtimeAccess: string
   warnings: string[]
+}
+
+export interface ExecutionPlanBudget {
+  currency: 'USD'
+  /** Sum of per-mission estimated costs (evidence-based, may be null per mission). */
+  estimatedCost: number | null
+  /** Operator-set hard ceiling (approval maxAuthorizedAmount). Null = not set. */
+  maximumAuthorizedCost: number | null
+  /** Reserved + recorded spend so far against this objective. */
+  spentSoFar: number
+  /** maximumAuthorizedCost - spentSoFar (null when no ceiling set). */
+  remainingAuthorized: number | null
 }
 
 export interface ExecutionPlan {
@@ -316,7 +343,12 @@ export interface ExecutionPlan {
     blockedMissions: number
     approvalRequired: boolean
     waves: string[][]
+    /** Sum of per-mission estimated costs (null when any mission lacks evidence). */
+    estimatedTotalCost: number | null
+    /** Sum of per-mission maximum exposures (hard authorization ceiling). */
+    maximumTotalExposure: number | null
   }
+  budget: ExecutionPlanBudget
   fingerprint: string
 }
 
@@ -343,7 +375,7 @@ function objectiveOf(metadata: Record<string, any>): number | null {
   return null
 }
 
-/** Execution-relevant fingerprint (Phase 8) — stable across cosmetic changes. */
+/** Execution-relevant fingerprint (Phase 8/12) — stable across cosmetic changes. */
 export function computeExecutionFingerprint(plan: Omit<ExecutionPlan, 'fingerprint'>): string {
   const missions = [...plan.missions]
     .sort((a, b) => a.taskId - b.taskId)
@@ -356,12 +388,120 @@ export function computeExecutionFingerprint(plan: Omit<ExecutionPlan, 'fingerpri
       runtimeType: mission.runtimeType || null,
       provider: mission.provider || null,
       model: mission.model || null,
+      modelResolved: mission.modelResolved || null,
+      pricingSource: mission.pricingSource || null,
       costClass: mission.costClass,
       estimatedCost: mission.estimatedCost ?? null,
+      maximumCostPerAttempt: mission.maximumCostPerAttempt ?? null,
+      maximumMissionExposure: mission.maximumMissionExposure ?? null,
+      maxAttempts: mission.maxAttempts ?? null,
       resources: mission.resources.map(resource => resource.resourceId).sort(),
     }))
   const canonical = JSON.stringify({ objectiveId: plan.objectiveId, missions })
   return createHash('sha256').update(canonical).digest('hex')
+}
+
+// ---------------------------------------------------------------------------
+// Cost-bounded estimation (Phase 4/5) — token envelopes + dollar estimates
+// ---------------------------------------------------------------------------
+
+/**
+ * Estimate a SAFE token envelope for a mission (Phase 4). We never claim to
+ * know exact future token usage: `estimated*` is a conservative expectation,
+ * `maximumAuthorized*` is the hard ceiling the operator authorizes (≈3× the
+ * estimate plus retry headroom). Defaults are per-mission-kind, scaled by the
+ * number of attached AI Arsenal resources (each is source material the reviewer
+ * may need to read).
+ */
+export interface MissionTokenEnvelope {
+  estimatedInputTokens: number
+  estimatedOutputTokens: number
+  maximumAuthorizedInputTokens: number
+  maximumAuthorizedOutputTokens: number
+  /** Allowed attempts (base attempt + retries) included in the exposure. */
+  maxAttempts: number
+  basis: string
+}
+
+export const DEFAULT_MAX_ATTEMPTS = 3
+
+const KIND_ENVELOPE: Record<string, { estIn: number; estOut: number; multIn: number; multOut: number }> = {
+  // Knowledge packs require reading approved source material (Wesnoth framework
+  // docs, OXCE reference) and producing a full structured pack.
+  'knowledge-curation': { estIn: 120_000, estOut: 10_000, multIn: 3, multOut: 3 },
+  // Deep reviews inspect one resource + competing registry entries.
+  'resource-deep-review': { estIn: 80_000, estOut: 6_000, multIn: 3, multOut: 3 },
+  // Default objective mission: task prompt + context, bounded output.
+  default: { estIn: 60_000, estOut: 4_000, multIn: 3, multOut: 3 },
+}
+
+const INPUT_PER_RESOURCE = 25_000
+const INPUT_PER_RESOURCE_CAP = 150_000
+
+export function missionKindOf(metadata: Record<string, any>): 'knowledge-curation' | 'resource-deep-review' | 'default' {
+  if (metadata.agentos_knowledge_curation && typeof metadata.agentos_knowledge_curation === 'object') return 'knowledge-curation'
+  if (metadata.agentos_resource_review && typeof metadata.agentos_resource_review === 'object') return 'resource-deep-review'
+  return 'default'
+}
+
+export function estimateMissionTokenEnvelope(
+  metadata: Record<string, any>,
+  resourceCount: number,
+  maxAttemptsOverride: number | null = null,
+): MissionTokenEnvelope {
+  const kind = missionKindOf(metadata)
+  const profile = KIND_ENVELOPE[kind] ?? KIND_ENVELOPE.default
+  const resourceAllowance = Math.min(resourceCount * INPUT_PER_RESOURCE, INPUT_PER_RESOURCE_CAP)
+  const estimatedInputTokens = profile.estIn + resourceAllowance
+  const estimatedOutputTokens = profile.estOut
+  const maximumAuthorizedInputTokens = Math.round(estimatedInputTokens * profile.multIn)
+  const maximumAuthorizedOutputTokens = Math.round(estimatedOutputTokens * profile.multOut)
+  const maxAttempts = maxAttemptsOverride && maxAttemptsOverride > 0 ? maxAttemptsOverride : DEFAULT_MAX_ATTEMPTS
+  return {
+    estimatedInputTokens,
+    estimatedOutputTokens,
+    maximumAuthorizedInputTokens,
+    maximumAuthorizedOutputTokens,
+    maxAttempts,
+    basis: `${kind} profile${resourceCount > 0 ? ` + ${resourceCount} attached resource(s)` : ''} (×${profile.multIn} input / ×${profile.multOut} output ceiling)`,
+  }
+}
+
+/**
+ * Dollar estimate for one mission from a resolved pricing entry (Phase 5).
+ * Estimate = expected tokens × rate; per-attempt ceiling = maximum tokens ×
+ * rate; mission exposure = per-attempt ceiling × allowed attempts (retries
+ * included). Rounded to whole cents — estimates, not invoices.
+ */
+export interface MissionCostEstimate {
+  estimatedCost: number
+  maximumCostPerAttempt: number
+  maximumMissionExposure: number
+  currency: string
+}
+
+export function estimateMissionCost(
+  pricing: ModelPricing,
+  envelope: MissionTokenEnvelope,
+): MissionCostEstimate {
+  const dollars = (input: number, output: number): number =>
+    (input / 1_000_000) * pricing.inputPerMillion + (output / 1_000_000) * pricing.outputPerMillion
+  const cents = (value: number): number => Math.round(value * 100) / 100
+  const estimatedCost = cents(dollars(envelope.estimatedInputTokens, envelope.estimatedOutputTokens))
+  const maximumCostPerAttempt = cents(dollars(envelope.maximumAuthorizedInputTokens, envelope.maximumAuthorizedOutputTokens))
+  const maximumMissionExposure = cents(maximumCostPerAttempt * envelope.maxAttempts)
+  return { estimatedCost, maximumCostPerAttempt, maximumMissionExposure, currency: pricing.currency }
+}
+
+/**
+ * Resolve pricing evidence for a mission (Phase 2/3). Never throws: a live
+ * lookup is sync-cached, a missing price yields null and the mission stays
+ * PAID_ESTIMATED/UNKNOWN with an honest basis.
+ */
+export function pricingEvidenceForMission(provider: string | null, model: string | null): ModelPricing | null {
+  if (!provider || !model) return null
+  if (provider.toLowerCase() !== 'openrouter') return null
+  return getModelPricing(provider, model)
 }
 
 /** Weak dependency waves: independent missions share an early wave. */
@@ -477,6 +617,41 @@ export function buildExecutionPlan(input: {
         .filter(resource => resource.resourceId)
       : []
 
+    // Cost-bounded estimation (Phase 4/5): resolve pricing evidence for
+    // openrouter missions, build a safe token envelope, and compute the dollar
+    // estimate + per-attempt ceiling + mission exposure (retries included).
+    // When no evidence exists the fields stay null and the basis says so.
+    const modelResolved = resolveMissionModel(classified.model)
+    const pricing = (classified.costClass === 'PAID_ESTIMATED' || classified.costClass === 'PAID_KNOWN')
+      ? pricingEvidenceForMission(classified.provider, modelResolved)
+      : null
+    let estimatedCost: number | null = classified.estimatedCost
+    let maximumCostPerAttempt: number | null = null
+    let maximumMissionExposure: number | null = null
+    let maxAttempts: number | null = null
+    let estimatedInputTokens: number | null = null
+    let estimatedOutputTokens: number | null = null
+    let maximumAuthorizedInputTokens: number | null = null
+    let maximumAuthorizedOutputTokens: number | null = null
+    let pricingSource: string | null = null
+    let retriesIncluded = false
+    let basis = classified.basis
+    if (pricing && (classified.costClass === 'PAID_ESTIMATED' || classified.costClass === 'PAID_KNOWN')) {
+      const envelope = estimateMissionTokenEnvelope(metadata, resources.length)
+      const estimate = estimateMissionCost(pricing, envelope)
+      estimatedInputTokens = envelope.estimatedInputTokens
+      estimatedOutputTokens = envelope.estimatedOutputTokens
+      maximumAuthorizedInputTokens = envelope.maximumAuthorizedInputTokens
+      maximumAuthorizedOutputTokens = envelope.maximumAuthorizedOutputTokens
+      maxAttempts = envelope.maxAttempts
+      maximumCostPerAttempt = estimate.maximumCostPerAttempt
+      maximumMissionExposure = estimate.maximumMissionExposure
+      pricingSource = pricing.pricingSource
+      retriesIncluded = envelope.maxAttempts > 1
+      if (estimatedCost === null) estimatedCost = estimate.estimatedCost
+      basis = `${classified.basis}; pricing ${pricing.pricingSource} ($${pricing.inputPerMillion}/M in, $${pricing.outputPerMillion}/M out)`
+    }
+
     missions.push({
       taskId,
       missionKey: String(row.key || `m${missions.length + 1}`),
@@ -488,9 +663,19 @@ export function buildExecutionPlan(input: {
       runtimeType: agentRuntime,
       provider: classified.provider,
       model: classified.model,
+      modelResolved,
+      pricingSource,
       costClass: classified.costClass,
-      estimatedCost: classified.estimatedCost,
-      costBasis: classified.basis,
+      estimatedCost,
+      estimatedInputTokens,
+      estimatedOutputTokens,
+      maximumAuthorizedInputTokens,
+      maximumAuthorizedOutputTokens,
+      maximumCostPerAttempt,
+      maxAttempts,
+      maximumMissionExposure,
+      retriesIncluded,
+      costBasis: basis,
       requiresApproval,
       dependencies: (row.dependsOnKeys || []).map(String),
       resources,
@@ -503,6 +688,15 @@ export function buildExecutionPlan(input: {
 
   const waves = dependencyWaves(missions)
   const approvalRequired = missions.some(mission => mission.requiresApproval)
+  // Sum only missions with evidence; blocked/unassigned missions (e.g. M6) are
+  // excluded from the authorization envelope — they need a fresh preview once
+  // routed. Null only when NO mission has an estimate.
+  const estimatedTotalCost = missions.some(mission => mission.estimatedCost !== null)
+    ? Math.round(missions.reduce((sum, mission) => sum + (mission.estimatedCost ?? 0), 0) * 100) / 100
+    : null
+  const maximumTotalExposure = missions.some(mission => mission.maximumMissionExposure !== null)
+    ? Math.round(missions.reduce((sum, mission) => sum + (mission.maximumMissionExposure ?? 0), 0) * 100) / 100
+    : null
   const plan: Omit<ExecutionPlan, 'fingerprint'> = {
     planId: `exp-${objective.workspace_id}-${objective.id}`,
     objectiveId: objective.id,
@@ -518,9 +712,30 @@ export function buildExecutionPlan(input: {
       blockedMissions,
       approvalRequired,
       waves,
+      estimatedTotalCost,
+      maximumTotalExposure,
+    },
+    budget: {
+      currency: 'USD',
+      estimatedCost: estimatedTotalCost,
+      maximumAuthorizedCost: null,
+      spentSoFar: 0,
+      remainingAuthorized: null,
     },
   }
   return { ...plan, fingerprint: computeExecutionFingerprint(plan) }
+}
+
+/** Resolve an alias (e.g. `sonnet`) to the concrete catalog id (e.g. `claude-sonnet-5`). */
+export function resolveMissionModel(model: string | null | undefined): string | null {
+  if (!model || typeof model !== 'string') return null
+  const trimmed = model.trim()
+  if (!trimmed) return null
+  // Canonical OpenRouter ids already carry the vendor prefix.
+  if (trimmed.includes('/')) return trimmed
+  if (trimmed.startsWith('claude-')) return trimmed
+  const alias = resolveGamutModelAlias(trimmed)
+  return alias || trimmed
 }
 
 export function isAgentOSGatedTask(metadata: Record<string, any> | string | null | undefined): boolean {

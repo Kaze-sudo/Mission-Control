@@ -13,7 +13,30 @@ const DEFAULT_GAMUT_HOST_API = 'http://127.0.0.1:47891/api'
 export interface GamutHostEffectiveRuntime {
   provider: string | null
   model: string | null
+  /** Concrete catalog model id the alias resolved to (e.g. claude-sonnet-5). */
+  modelResolved: string | null
+  /** Provider-qualified canonical id (e.g. anthropic/claude-sonnet-5). */
+  canonicalModelId: string | null
   source: 'settings-file' | 'none'
+}
+
+/**
+ * Resolve a Gamut model alias (settings `models.agentModel`) to its concrete
+ * catalog id. Gamut resolves bare family names to the newest model in that
+ * family (the app bundle catalog: `family === alias && isLatest`). Aliases we
+ * have verified in the installed host catalog map to these concrete ids.
+ */
+const GAMUT_MODEL_ALIASES: Record<string, string> = {
+  sonnet: 'claude-sonnet-5',
+  haiku: 'claude-haiku-4-5',
+  opus: 'claude-opus-4-6',
+}
+
+export function resolveGamutModelAlias(alias: string | null | undefined): string | null {
+  if (!alias || typeof alias !== 'string') return null
+  const trimmed = alias.trim()
+  if (!trimmed) return null
+  return GAMUT_MODEL_ALIASES[trimmed] ?? trimmed
 }
 
 const EFFECTIVE_RUNTIME_TTL_MS = 30_000
@@ -34,11 +57,22 @@ function resolveGamutHostEffectiveRuntime(): GamutHostEffectiveRuntime {
     const model = typeof models.agentModel === 'string' && models.agentModel.trim()
       ? models.agentModel.trim()
       : null
-    if (provider || model) return { provider, model, source: 'settings-file' }
+    const modelResolved = resolveGamutModelAlias(model)
+    if (provider || model) {
+      return {
+        provider,
+        model,
+        modelResolved,
+        canonicalModelId: provider === 'openrouter' && modelResolved
+          ? (modelResolved.includes('/') ? modelResolved : `anthropic/${modelResolved}`)
+          : null,
+        source: 'settings-file',
+      }
+    }
   } catch {
     /* host not configured or settings file unreadable */
   }
-  return { provider: null, model: null, source: 'none' }
+  return { provider: null, model: null, modelResolved: null, canonicalModelId: null, source: 'none' }
 }
 
 export function getGamutHostEffectiveRuntime(): GamutHostEffectiveRuntime {
