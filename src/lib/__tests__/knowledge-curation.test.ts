@@ -49,7 +49,7 @@ import {
 } from '@/lib/knowledge-curation'
 import { getAiResourceRegistry } from '@/lib/ai-resource-registry'
 import { getOrCreateAgentOSOperationsProject } from '@/lib/agentos-operations'
-import { createDelegationForTask } from '@/lib/delegation-ledger'
+import { createDelegationForTask, updateDelegation } from '@/lib/delegation-ledger'
 import { promoteReadyObjectiveMissions, reconcileObjectiveStatuses } from '@/lib/objective-planning'
 
 let root = ''
@@ -116,6 +116,27 @@ function setProjectCommand(projectId: number, cmdState: string, wsId = workspace
 function addComment(taskId: number, content: string, author = 'specialist-gamut') {
   state.db!.prepare('INSERT INTO comments (task_id, author, content, created_at, workspace_id) VALUES (?, ?, ?, ?, ?)')
     .run(taskId, author, content, Math.floor(Date.now() / 1000), workspaceId)
+}
+
+/**
+ * Binds a delegation to the task's current execution attempt (as the normal
+ * dispatch claim does via createDelegationForTask) and completes it with the
+ * given output. Automatic reconcileKnowledgeCuration only ever consumes the
+ * completed delegation bound to the CURRENT attempt — comments and older
+ * delegations are audit history, not result input.
+ */
+function bindCompletedDelegation(taskId: number, projectId: number | null, text: string, wsId = workspaceId): string {
+  const row = state.db!.prepare('SELECT metadata FROM tasks WHERE id = ? AND workspace_id = ?').get(taskId, wsId) as { metadata: string | null }
+  const delegation = createDelegationForTask({
+    taskId,
+    projectId,
+    workspaceId: wsId,
+    routingAgentName: 'AgentOS Router',
+    runtimeType: 'hermes',
+    metadata: row.metadata,
+  })
+  updateDelegation(delegation.id, wsId, { status: 'completed', resultSummary: text, completed: true })
+  return delegation.id
 }
 
 /** Valid original content that avoids factual/verbatim violations. */
@@ -659,8 +680,8 @@ describe('M6 finalization gate + manifest', () => {
   it('reconcile ignores unrelated native tasks and stays workspace-scoped', () => {
     const suite = createKnowledgeSuiteObjective({ workspaceId, root })
     const m1 = suite.missions.find(m => m.key === 'm1')!
-    addComment(m1.taskId, validPackEnvelope(m1.packId))
     state.db!.prepare("UPDATE tasks SET status = 'review' WHERE id = ?").run(m1.taskId)
+    bindCompletedDelegation(m1.taskId, suite.projectId, validPackEnvelope(m1.packId))
     state.db!.prepare("INSERT INTO tasks (title, status, metadata, workspace_id) VALUES ('plain', 'review', '{}', ?)").run(workspaceId)
     const other = createKnowledgeSuiteObjective({ workspaceId: 2, root })
     const otherM1 = other.missions.find(m => m.key === 'm1')!
@@ -682,29 +703,40 @@ describe('reconcileKnowledgeCuration honors AgentOS project command', () => {
   }
 
   it('ACTIVE: reconciliation ingests a valid current result normally', () => {
-    const { taskId, packId } = suiteWithReviewableM1('active')
-    addComment(taskId, validPackEnvelope(packId))
+    const { taskId, packId, projectId } = suiteWithReviewableM1('active')
+    // The specialist's output arrives through a completed delegation bound to
+    // the current attempt — a bare comment is never automatic result input.
+    bindCompletedDelegation(taskId, projectId, validPackEnvelope(packId))
     const result = reconcileKnowledgeCuration(root)
     expect(result.ingested).toBe(1)
-    expect(JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation.state).toBe('COMPLETE')
+    const block = JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation
+    expect(block.state).toBe('COMPLETE')
+    expect(block.consumed_delegation_id).toBeTruthy()
     expect(state.activities.some(a => String((a as unknown[])[0]).includes('agentos_knowledge_reconcile_held'))).toBe(false)
   })
 
   it('PAUSED: reconciliation does not ingest results — mission state, attempts and staging untouched', () => {
-    const { taskId, packId } = suiteWithReviewableM1('paused')
-    addComment(taskId, validPackEnvelope(packId))
+    const { taskId, packId, projectId } = suiteWithReviewableM1('paused')
+    // Even an eligible completed delegation on the current attempt is held.
+    bindCompletedDelegation(taskId, projectId, validPackEnvelope(packId))
     const result = reconcileKnowledgeCuration(root)
     expect(result.ingested).toBe(0)
     const block = JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation
     expect(block.state).toBe('ROUTED')
     expect(block.invalid_attempts ?? 0).toBe(0)
     expect(block.staged_path ?? null).toBeNull()
+    expect(block.consumed_delegation_id ?? null).toBeNull()
     expect(state.activities.some(a => String((a as unknown[])[0]).includes('agentos_knowledge_reconcile_held'))).toBe(true)
   })
 
   it('PAUSED: malformed historical residue must not flip the mission to FAILED', () => {
-    const { taskId } = suiteWithReviewableM1('paused')
-    addComment(taskId, 'API Error: 402 Workspace has insufficient balance. Top up to continue.')
+    const { taskId, projectId } = suiteWithReviewableM1('paused')
+    const residue = 'API Error: 402 Workspace has insufficient balance. Top up to continue.'
+    // Provider-failure residue preserved as a historical completed record and a
+    // task comment from the pre-fix era. PAUSED holds before lineage is even
+    // consulted — the mission cannot flip to FAILED from residue.
+    bindCompletedDelegation(taskId, projectId, residue)
+    addComment(taskId, residue)
     const result = reconcileKnowledgeCuration(root)
     expect(result.invalid).toBe(0)
     const block = JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation
@@ -724,7 +756,7 @@ describe('reconcileKnowledgeCuration honors AgentOS project command', () => {
     const suite = createKnowledgeSuiteObjective({ workspaceId, root })
     const m1 = suite.missions.find(m => m.key === 'm1')!
     state.db!.prepare("UPDATE tasks SET status = 'review' WHERE id = ?").run(m1.taskId)
-    addComment(m1.taskId, validPackEnvelope(m1.packId))
+    bindCompletedDelegation(m1.taskId, suite.projectId, validPackEnvelope(m1.packId))
     const result = reconcileKnowledgeCuration(root)
     expect(result.ingested).toBe(1)
     expect(JSON.parse(taskById(m1.taskId).metadata).agentos_knowledge_curation.state).toBe('COMPLETE')
@@ -735,18 +767,141 @@ describe('reconcileKnowledgeCuration honors AgentOS project command', () => {
     const heldM1 = held.missions.find(m => m.key === 'm1')!
     setProjectCommand(held.projectId, 'paused', 1)
     state.db!.prepare("UPDATE tasks SET status = 'review' WHERE id = ?").run(heldM1.taskId)
-    addComment(heldM1.taskId, validPackEnvelope(heldM1.packId))
+    bindCompletedDelegation(heldM1.taskId, held.projectId, validPackEnvelope(heldM1.packId), 1)
 
     const other = createKnowledgeSuiteObjective({ workspaceId: 2, root })
     const otherM1 = other.missions.find(m => m.key === 'm1')!
     state.db!.prepare('UPDATE tasks SET status = ? WHERE id = ? AND workspace_id = ?').run('review', otherM1.taskId, 2)
-    state.db!.prepare('INSERT INTO comments (task_id, author, content, created_at, workspace_id) VALUES (?, ?, ?, ?, ?)')
-      .run(otherM1.taskId, 'specialist-gamut', validPackEnvelope(otherM1.packId), Math.floor(Date.now() / 1000), 2)
+    bindCompletedDelegation(otherM1.taskId, other.projectId, validPackEnvelope(otherM1.packId), 2)
 
     const result = reconcileKnowledgeCuration(root)
     expect(result.ingested).toBe(1)
     expect(JSON.parse(taskById(heldM1.taskId).metadata).agentos_knowledge_curation.state).toBe('ROUTED')
     expect(JSON.parse(taskById(otherM1.taskId).metadata).agentos_knowledge_curation.state).toBe('COMPLETE')
+  })
+})
+
+describe('knowledge execution-attempt lineage (reconcile provenance)', () => {
+  const RESIDUE = 'API Error: 402 Workspace has insufficient balance. Top up to continue.'
+
+  function reviewableSuite(): { projectId: number; taskId: number; packId: string } {
+    const suite = createKnowledgeSuiteObjective({ workspaceId, root })
+    const m1 = suite.missions.find(m => m.key === 'm1')!
+    state.db!.prepare("UPDATE tasks SET status = 'review' WHERE id = ?").run(m1.taskId)
+    return { projectId: suite.projectId, taskId: m1.taskId, packId: m1.packId }
+  }
+
+  it('exact 402 retry regression: a retried mission never re-ingests generation-A residue', () => {
+    const { projectId, taskId, packId } = reviewableSuite()
+
+    // Generation A: the pre-fix world — a completed delegation carrying the 402
+    // diagnostic was ingested as an (invalid) result and the mission FAILED.
+    const delA = bindCompletedDelegation(taskId, projectId, RESIDUE)
+    addComment(taskId, RESIDUE)
+    expect(ingestKnowledgeMissionResult({ taskId, workspaceId, root, text: RESIDUE, delegationId: delA }).status).toBe('INVALID_RESULT')
+    expect(JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation.state).toBe('FAILED')
+
+    // Generation B begins: retry resets to ROUTED and clears the result binding.
+    const retried = retryKnowledgeMission({ packId, workspaceId, root })
+    expect(retried.taskId).toBe(taskId)
+    const afterRetry = JSON.parse(taskById(taskId).metadata)
+    expect(afterRetry.agentos_knowledge_curation.state).toBe('ROUTED')
+    expect(afterRetry.agentos_delegation_id ?? null).toBeNull()
+    expect(afterRetry.agentos_knowledge_curation.consumed_delegation_id ?? null).toBeNull()
+    state.db!.prepare("UPDATE tasks SET status = 'review' WHERE id = ?").run(taskId)
+
+    // Reconcile runs BEFORE delegation B exists: generation-A delegation,
+    // comment and 402 diagnostic must all be ignored — the mission stays ROUTED.
+    // Generation A legitimately logged one invalid-result event as history; the
+    // held reconcile must not add any NEW one.
+    const invalidHistory = state.activities.filter((a: unknown) => String((a as unknown[])[0]) === 'agentos_knowledge_invalid_result').length
+    const held1 = reconcileKnowledgeCuration(root)
+    expect(held1.ingested).toBe(0)
+    expect(held1.message).toContain('held awaiting current attempt')
+    const blockHeld = JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation
+    expect(blockHeld.state).toBe('ROUTED')
+    expect(blockHeld.invalid_attempts ?? 0).toBe(0)
+    expect(state.activities.filter((a: unknown) => String((a as unknown[])[0]) === 'agentos_knowledge_invalid_result').length).toBe(invalidHistory)
+
+    // Delegation B is created but still running: reconcile still does nothing.
+    const row = state.db!.prepare('SELECT metadata FROM tasks WHERE id = ? AND workspace_id = ?').get(taskId, workspaceId) as { metadata: string | null }
+    const delBRunning = createDelegationForTask({
+      taskId, projectId, workspaceId, routingAgentName: 'AgentOS Router', runtimeType: 'hermes', metadata: row.metadata,
+    })
+    expect(String(JSON.parse(taskById(taskId).metadata).agentos_delegation_id)).toBe(delBRunning.id)
+    const held2 = reconcileKnowledgeCuration(root)
+    expect(held2.ingested).toBe(0)
+    expect(JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation.state).toBe('ROUTED')
+
+    // Delegation B completes with valid output: only B is consumed.
+    updateDelegation(delBRunning.id, workspaceId, { status: 'completed', resultSummary: validPackEnvelope(packId), completed: true })
+    const consumed = reconcileKnowledgeCuration(root)
+    expect(consumed.ingested).toBe(1)
+    const blockDone = JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation
+    expect(blockDone.state).toBe('COMPLETE')
+    expect(blockDone.consumed_delegation_id).toBe(delBRunning.id)
+
+    // A duplicate reconcile pass is idempotent — no double ingestion.
+    const dup = reconcileKnowledgeCuration(root)
+    expect(dup.ingested).toBe(0)
+    expect(dup.message).not.toContain('held')
+  })
+
+  it('a failed current delegation (provider diagnostic) never becomes authored output', () => {
+    const { projectId, taskId } = reviewableSuite()
+    const row = state.db!.prepare('SELECT metadata FROM tasks WHERE id = ? AND workspace_id = ?').get(taskId, workspaceId) as { metadata: string | null }
+    const delegation = createDelegationForTask({
+      taskId, projectId, workspaceId, routingAgentName: 'AgentOS Router', runtimeType: 'gamut', metadata: row.metadata,
+    })
+    updateDelegation(delegation.id, workspaceId, { status: 'failed', errorMessage: RESIDUE })
+    const result = reconcileKnowledgeCuration(root)
+    expect(result.ingested).toBe(0)
+    expect(result.invalid).toBe(0)
+    const block = JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation
+    expect(block.state).toBe('ROUTED')
+    expect(block.invalid_attempts ?? 0).toBe(0)
+    expect(state.activities.some((a: unknown) => String((a as unknown[])[0]) === 'agentos_knowledge_invalid_result')).toBe(false)
+  })
+
+  it('only the current generation delegation is consumed after a successful historical generation', () => {
+    const { projectId, taskId, packId } = reviewableSuite()
+
+    // Generation A completes successfully and is consumed.
+    bindCompletedDelegation(taskId, projectId, validPackEnvelope(packId))
+    expect(reconcileKnowledgeCuration(root).ingested).toBe(1)
+    expect(JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation.state).toBe('COMPLETE')
+
+    // Retry opens generation B; A stays as a completed historical delegation.
+    retryKnowledgeMission({ packId, workspaceId, root })
+    state.db!.prepare("UPDATE tasks SET status = 'review' WHERE id = ?").run(taskId)
+    expect(reconcileKnowledgeCuration(root).ingested).toBe(0)
+    expect(JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation.state).toBe('ROUTED')
+
+    // Generation B completes: only B's output is eligible, and B is recorded.
+    const delB = bindCompletedDelegation(taskId, projectId, validPackEnvelope(packId))
+    expect(reconcileKnowledgeCuration(root).ingested).toBe(1)
+    const block = JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation
+    expect(block.consumed_delegation_id).toBe(delB)
+    expect(block.state).toBe('COMPLETE')
+  })
+
+  it('retry clears the current delegation binding and all derived result state', () => {
+    const { projectId, taskId, packId } = reviewableSuite()
+    bindCompletedDelegation(taskId, projectId, validPackEnvelope(packId))
+    expect(ingestKnowledgeMissionResult({ taskId, workspaceId, root }).status).toBe('COMPLETE')
+    const before = JSON.parse(taskById(taskId).metadata)
+    expect(before.agentos_knowledge_curation.staged_path).toBeTruthy()
+    expect(before.agentos_knowledge_curation.result).toBeTruthy()
+    expect(before.agentos_delegation_id).toBeTruthy()
+
+    retryKnowledgeMission({ packId, workspaceId, root })
+    const after = JSON.parse(taskById(taskId).metadata)
+    expect(after.agentos_knowledge_curation.state).toBe('ROUTED')
+    expect(after.agentos_delegation_id ?? null).toBeNull()
+    const block = after.agentos_knowledge_curation
+    for (const key of ['result', 'staged_path', 'staged_at', 'delegation_id', 'consumed_delegation_id', 'validation', 'suite_verdict', 'finalized']) {
+      expect(block[key] ?? null).toBeNull()
+    }
   })
 })
 

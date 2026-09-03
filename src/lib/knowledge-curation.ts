@@ -4,7 +4,7 @@ import { getDatabase, db_helpers } from './db'
 import { config } from './config'
 import { getAiResourceRegistry, recommendAiResources, type AiResourceRecord } from './ai-resource-registry'
 import { routeTaskWithinProject } from './project-task-routing'
-import { getLatestDelegationForTask } from './delegation-ledger'
+import { getLatestDelegationForTask, getDelegation } from './delegation-ledger'
 import { createObjectivePlan, promoteReadyObjectiveMissions } from './objective-planning'
 import { getOrCreateAgentOSOperationsProject } from './agentos-operations'
 import { mayAgentosLifecycleAdvance } from './project-command'
@@ -1076,6 +1076,34 @@ export interface KnowledgeIngestResult {
   finalized?: boolean
 }
 
+/**
+ * Execution-attempt lineage for a knowledge mission.
+ *
+ * The ONLY result that automatic reconciliation may consume for a mission is
+ * the output of the delegation bound to the CURRENT execution attempt — the
+ * delegation id stored on the task metadata by createDelegationForTask at
+ * claim time and cleared by retryKnowledgeMission. Older delegations, task
+ * resolutions and comments belong to earlier generations: they are preserved
+ * as audit history but are never automatic result input.
+ */
+function currentMissionDelegationResult(
+  taskId: number,
+  workspaceId: number,
+): { id: string; resultSummary: string } | null {
+  const row = getDatabase().prepare('SELECT metadata FROM tasks WHERE id = ? AND workspace_id = ?')
+    .get(taskId, workspaceId) as { metadata: string | null } | undefined
+  if (!row) return null
+  const metadata = parseMetadata(row.metadata)
+  const delegationId = metadata.agentos_delegation_id
+  if (typeof delegationId !== 'string' || !delegationId) return null
+  const delegation = getDelegation(delegationId, workspaceId)
+  if (!delegation || delegation.taskId !== taskId) return null
+  if (delegation.status !== 'completed') return null
+  const resultSummary = String(delegation.resultSummary || '').trim()
+  if (!resultSummary) return null
+  return { id: delegation.id, resultSummary }
+}
+
 function readMissionComments(taskId: number, workspaceId: number): string {
   const rows = getDatabase().prepare(
     'SELECT content FROM comments WHERE task_id = ? AND workspace_id = ? ORDER BY created_at DESC, id DESC LIMIT 6',
@@ -1242,6 +1270,8 @@ export function ingestKnowledgeMissionResult(input: {
   text?: string | null
   root?: string
   actor?: string | null
+  /** The delegation whose output is being consumed (execution-attempt provenance). */
+  delegationId?: string | null
 }): KnowledgeIngestResult {
   const db = getDatabase()
   const root = input.root || config.aiVaultRoot
@@ -1255,10 +1285,31 @@ export function ingestKnowledgeMissionResult(input: {
   const spec = PACK_BY_ID.get(packId)
   if (!spec) return { status: 'NOT_A_CURATION_TASK' }
   const actor = input.actor || 'agentos'
+  // The execution whose output is being consumed: an explicitly supplied
+  // delegation (automatic reconcile always supplies one) or the delegation
+  // bound to this task's current attempt. Historical delegations are never
+  // eligible output for a newer retry generation (retry clears the binding).
+  const delegationId = input.delegationId
+    ?? (typeof metadata.agentos_delegation_id === 'string' && metadata.agentos_delegation_id ? metadata.agentos_delegation_id : null)
+    ?? null
 
   let text = input.text ?? null
   if (text === null || !text.trim()) {
-    text = readMissionComments(task.id, input.workspaceId)
+    // Execution-attempt authority: when a delegation is bound to the current
+    // attempt, its completed result_summary is the only eligible text — task
+    // comments are audit history, not automatic output. readMissionComments
+    // remains a fallback only when no current delegation output exists
+    // (manual/legacy ingestion paths).
+    if (delegationId) {
+      const delegation = getDelegation(delegationId, input.workspaceId)
+      if (delegation?.status === 'completed') {
+        const summary = String(delegation.resultSummary || '').trim()
+        if (summary) text = summary
+      }
+    }
+    if (text === null || !text.trim()) {
+      text = readMissionComments(task.id, input.workspaceId)
+    }
   }
   if (!text || !text.trim()) return { status: 'NO_RESULT' }
 
@@ -1281,7 +1332,11 @@ export function ingestKnowledgeMissionResult(input: {
           attempts: invalidAttempts,
         })
       } else {
-        markKnowledgeMissionState(db, task.id, input.workspaceId, 'FAILED', { error: errorText, invalid_attempts: invalidAttempts })
+        markKnowledgeMissionState(db, task.id, input.workspaceId, 'FAILED', {
+          error: errorText,
+          invalid_attempts: invalidAttempts,
+          ...(delegationId ? { delegation_id: delegationId, consumed_delegation_id: delegationId } : {}),
+        })
       }
       return { status: 'INVALID_RESULT', packId, errors: parsed.errors }
     }
@@ -1295,7 +1350,7 @@ export function ingestKnowledgeMissionResult(input: {
         reason: 'policy_conflict',
         summary: `Suite validation FAILED: ${failed.length} pack(s) did not pass — ${issues.join('; ')}`,
         objectiveId: block.objective_id ?? null,
-        delegationId: metadata.agentos_delegation_id || null,
+        delegationId: delegationId || metadata.agentos_delegation_id || null,
       })
       db_helpers.logActivity('agentos_knowledge_validation_failed', 'task', task.id, actor,
         `Suite validation FAILED for ${packId}`, { suite_id: KNOWLEDGE_SUITE_ID }, input.workspaceId)
@@ -1334,6 +1389,7 @@ export function ingestKnowledgeMissionResult(input: {
       finalized: true,
       output_dir: outputDir,
       validation_completed_at: new Date().toISOString(),
+      ...(delegationId ? { delegation_id: delegationId, consumed_delegation_id: delegationId } : {}),
     })
     db_helpers.logActivity('agentos_knowledge_suite_validated', 'task', task.id, actor,
       `Knowledge suite ${KNOWLEDGE_SUITE_ID} validated PASS and finalized (${finalized.written.length} packs)`,
@@ -1366,7 +1422,11 @@ export function ingestKnowledgeMissionResult(input: {
         attempts: invalidAttempts,
       })
     } else {
-      markKnowledgeMissionState(db, task.id, input.workspaceId, 'FAILED', { error: errorText, invalid_attempts: invalidAttempts })
+      markKnowledgeMissionState(db, task.id, input.workspaceId, 'FAILED', {
+        error: errorText,
+        invalid_attempts: invalidAttempts,
+        ...(delegationId ? { delegation_id: delegationId, consumed_delegation_id: delegationId } : {}),
+      })
     }
     return { status: 'INVALID_RESULT', packId, errors: parsed.errors }
   }
@@ -1382,6 +1442,7 @@ export function ingestKnowledgeMissionResult(input: {
     capabilities: value.capabilities,
     limitations: value.limitations,
     warnings: value.warnings,
+    ...(delegationId ? { delegation_id: delegationId, consumed_delegation_id: delegationId } : {}),
   })
   // A valid result resolves any earlier escalation for this mission.
   const afterRow = db.prepare('SELECT metadata FROM tasks WHERE id = ? AND workspace_id = ?')
@@ -1429,8 +1490,21 @@ export function retryKnowledgeMission(input: {
     error: null,
     retried_at: new Date().toISOString(),
   }
+  // A retry opens a NEW execution generation. Derived output from a previous
+  // generation (staged path, result, consumed-delegation marker, validation
+  // artifacts) is not eligible for the new attempt — it stays in the vault and
+  // delegation/comments as history, but the live mission block must not
+  // present it as the current result. The delegation binding on the task is
+  // also cleared so automatic reconciliation cannot consume an old delegation.
   delete metadata.agentos_routing
   delete metadata.agentos_delegation_id
+  for (const key of [
+    'result', 'staged_path', 'staged_at', 'capabilities', 'limitations', 'warnings',
+    'validation', 'suite_verdict', 'finalized', 'output_dir', 'validation_completed_at',
+    'delegation_id', 'consumed_delegation_id',
+  ]) {
+    delete metadata.agentos_knowledge_curation[key]
+  }
   db.prepare('UPDATE tasks SET status = ?, assigned_to = NULL, resolution = NULL, outcome = NULL, metadata = ?, updated_at = ? WHERE id = ? AND workspace_id = ?')
     .run('inbox', JSON.stringify(metadata), now, existing.id, input.workspaceId)
   resolveTaskEscalation({ workspaceId: input.workspaceId, taskId: existing.id, actor, note: `Knowledge mission ${input.packId} retried` })
@@ -1617,6 +1691,7 @@ export function reconcileKnowledgeCuration(rootInput?: string): {
   let ingested = 0
   let invalid = 0
   let running = 0
+  let lineageHeld = 0
 
   // AgentOS is the Company Commander: while an AgentOS-managed project is not
   // ACTIVE, its automated lifecycle must not advance — that includes result
@@ -1651,14 +1726,35 @@ export function reconcileKnowledgeCuration(rootInput?: string): {
   }
 
   for (const task of tasks) {
-    const row = db.prepare('SELECT status FROM tasks WHERE id = ? AND workspace_id = ?').get(task.id, task.workspace_id) as { status: string }
+    const row = db.prepare('SELECT status, metadata FROM tasks WHERE id = ? AND workspace_id = ?')
+      .get(task.id, task.workspace_id) as { status: string; metadata: string | null }
     if (row.status === 'inbox' || row.status === 'backlog' || row.status === 'done' || row.status === 'failed') continue
-    const block = parseMetadata(task.metadata).agentos_knowledge_curation
+    const block = parseMetadata(row.metadata).agentos_knowledge_curation
     if (!block?.pack_id) continue
     if (['COMPLETE', 'FAILED', 'NEEDS_MANUAL'].includes(String(block.state || ''))) continue
     if (isHeld(task)) continue
+
+    // Execution-attempt lineage: automatic ingestion only ever consumes the
+    // output of the delegation bound to the CURRENT execution attempt. That
+    // binding is set at dispatch claim (agentos_delegation_id) and cleared by
+    // retryKnowledgeMission, so historical comments / older delegations are
+    // audit history — they can never become eligible output for a newer retry
+    // generation. A mission with no current completed delegation stays exactly
+    // as it is (ROUTED) until the current attempt actually produces output.
+    const current = currentMissionDelegationResult(task.id, task.workspace_id)
+    if (!current) {
+      lineageHeld++
+      continue
+    }
+    if (String(block.consumed_delegation_id || '') === current.id) continue
     try {
-      const result = ingestKnowledgeMissionResult({ taskId: task.id, workspaceId: task.workspace_id, root })
+      const result = ingestKnowledgeMissionResult({
+        taskId: task.id,
+        workspaceId: task.workspace_id,
+        root,
+        text: current.resultSummary,
+        delegationId: current.id,
+      })
       if (result.status === 'COMPLETE') ingested++
       else if (result.status === 'INVALID_RESULT') invalid++
     } catch {
@@ -1675,6 +1771,7 @@ export function reconcileKnowledgeCuration(rootInput?: string): {
     ingested ? `${ingested} validated` : null,
     invalid ? `${invalid} invalid` : null,
     running ? `${running} running` : null,
+    lineageHeld ? `${lineageHeld} held awaiting current attempt` : null,
     promotion.promoted.length ? `${promotion.promoted.length} dependency mission(s) promoted` : null,
     policy.escalated.length ? `${policy.escalated.length} escalated to needs-manual` : null,
     policy.retryable ? `${policy.retryable} retryable` : null,
