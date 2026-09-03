@@ -7,6 +7,7 @@ import { routeTaskWithinProject } from './project-task-routing'
 import { getLatestDelegationForTask } from './delegation-ledger'
 import { createObjectivePlan, promoteReadyObjectiveMissions } from './objective-planning'
 import { getOrCreateAgentOSOperationsProject } from './agentos-operations'
+import { mayAgentosLifecycleAdvance } from './project-command'
 import {
   escalateTask,
   readTaskEscalation,
@@ -1610,12 +1611,32 @@ export function reconcileKnowledgeCuration(rootInput?: string): {
   // KNOWLEDGE_PACK_SPECS (required execution role vs preferred domains).
   refreshSuiteMissionCapabilityMetadata({ actor: 'agentos' })
   const tasks = db.prepare(
-    `SELECT id, workspace_id, metadata FROM tasks WHERE metadata LIKE '%"agentos_knowledge_curation"%' ORDER BY id`,
-  ).all() as Array<{ id: number; workspace_id: number; metadata: string | null }>
+    `SELECT id, workspace_id, project_id, metadata FROM tasks WHERE metadata LIKE '%"agentos_knowledge_curation"%' ORDER BY id`,
+  ).all() as Array<{ id: number; workspace_id: number; project_id: number | null; metadata: string | null }>
 
   let ingested = 0
   let invalid = 0
   let running = 0
+
+  // AgentOS is the Company Commander: while an AgentOS-managed project is not
+  // ACTIVE, its automated lifecycle must not advance — that includes result
+  // consumption, mission-state mutation, staging and finalization. These gates
+  // use the same shared command check as dispatch/Aegis; projects without an
+  // agentos_project_command record are unmanaged and are never gated here.
+  const isHeld = (task: { id: number; workspace_id: number; project_id: number | null }): boolean => {
+    const gate = mayAgentosLifecycleAdvance({ projectId: task.project_id, workspaceId: task.workspace_id })
+    if (gate.allowed) return false
+    db_helpers.logActivity(
+      'agentos_knowledge_reconcile_held',
+      'task',
+      task.id,
+      'agentos',
+      `Knowledge reconcile held: ${gate.reason}`,
+      { project_id: task.project_id, state: gate.state },
+      task.workspace_id,
+    )
+    return true
+  }
 
   const inProgress = tasks.filter(task => {
     const row = db.prepare('SELECT status FROM tasks WHERE id = ? AND workspace_id = ?').get(task.id, task.workspace_id) as { status: string }
@@ -1624,6 +1645,7 @@ export function reconcileKnowledgeCuration(rootInput?: string): {
   for (const task of inProgress) {
     const block = parseMetadata(task.metadata).agentos_knowledge_curation
     if (!block?.pack_id) continue
+    if (isHeld(task)) continue
     markKnowledgeMissionState(db, task.id, task.workspace_id, 'RUNNING')
     running++
   }
@@ -1634,6 +1656,7 @@ export function reconcileKnowledgeCuration(rootInput?: string): {
     const block = parseMetadata(task.metadata).agentos_knowledge_curation
     if (!block?.pack_id) continue
     if (['COMPLETE', 'FAILED', 'NEEDS_MANUAL'].includes(String(block.state || ''))) continue
+    if (isHeld(task)) continue
     try {
       const result = ingestKnowledgeMissionResult({ taskId: task.id, workspaceId: task.workspace_id, root })
       if (result.status === 'COMPLETE') ingested++

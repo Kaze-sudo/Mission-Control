@@ -91,6 +91,10 @@ function seedDb(): void {
       native_session_id TEXT, native_run_id TEXT, attempt INTEGER NOT NULL DEFAULT 1,
       result_summary TEXT, error_message TEXT, created_at INTEGER, updated_at INTEGER, completed_at INTEGER
     );
+    CREATE TABLE agentos_project_command (
+      project_id INTEGER PRIMARY KEY, workspace_id INTEGER NOT NULL,
+      state TEXT, updated_at INTEGER
+    );
     CREATE TABLE workspaces (
       id INTEGER PRIMARY KEY, name TEXT, isolation TEXT NOT NULL DEFAULT 'shared'
     );
@@ -101,6 +105,13 @@ function seedDb(): void {
 
 function taskById(id: number): any {
   return state.db!.prepare('SELECT * FROM tasks WHERE id = ?').get(id)
+}
+function setProjectCommand(projectId: number, cmdState: string, wsId = workspaceId): void {
+  state.db!.prepare(
+    `INSERT INTO agentos_project_command (project_id, workspace_id, state, updated_at)
+     VALUES (?, ?, ?, unixepoch())
+     ON CONFLICT(project_id) DO UPDATE SET state = excluded.state, updated_at = unixepoch()`
+  ).run(projectId, wsId, cmdState)
 }
 function addComment(taskId: number, content: string, author = 'specialist-gamut') {
   state.db!.prepare('INSERT INTO comments (task_id, author, content, created_at, workspace_id) VALUES (?, ?, ?, ?, ?)')
@@ -658,6 +669,84 @@ describe('M6 finalization gate + manifest', () => {
     expect(result.ingested).toBeGreaterThanOrEqual(1)
     expect(JSON.parse(taskById(m1.taskId).metadata).agentos_knowledge_curation.state).toBe('COMPLETE')
     expect(JSON.parse(taskById(otherM1.taskId).metadata).agentos_knowledge_curation.state).not.toBe('COMPLETE')
+  })
+})
+
+describe('reconcileKnowledgeCuration honors AgentOS project command', () => {
+  function suiteWithReviewableM1(cmdState: string): { projectId: number; taskId: number; packId: string } {
+    const suite = createKnowledgeSuiteObjective({ workspaceId, root })
+    const m1 = suite.missions.find(m => m.key === 'm1')!
+    setProjectCommand(suite.projectId, cmdState)
+    state.db!.prepare("UPDATE tasks SET status = 'review' WHERE id = ?").run(m1.taskId)
+    return { projectId: suite.projectId, taskId: m1.taskId, packId: m1.packId }
+  }
+
+  it('ACTIVE: reconciliation ingests a valid current result normally', () => {
+    const { taskId, packId } = suiteWithReviewableM1('active')
+    addComment(taskId, validPackEnvelope(packId))
+    const result = reconcileKnowledgeCuration(root)
+    expect(result.ingested).toBe(1)
+    expect(JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation.state).toBe('COMPLETE')
+    expect(state.activities.some(a => String((a as unknown[])[0]).includes('agentos_knowledge_reconcile_held'))).toBe(false)
+  })
+
+  it('PAUSED: reconciliation does not ingest results — mission state, attempts and staging untouched', () => {
+    const { taskId, packId } = suiteWithReviewableM1('paused')
+    addComment(taskId, validPackEnvelope(packId))
+    const result = reconcileKnowledgeCuration(root)
+    expect(result.ingested).toBe(0)
+    const block = JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation
+    expect(block.state).toBe('ROUTED')
+    expect(block.invalid_attempts ?? 0).toBe(0)
+    expect(block.staged_path ?? null).toBeNull()
+    expect(state.activities.some(a => String((a as unknown[])[0]).includes('agentos_knowledge_reconcile_held'))).toBe(true)
+  })
+
+  it('PAUSED: malformed historical residue must not flip the mission to FAILED', () => {
+    const { taskId } = suiteWithReviewableM1('paused')
+    addComment(taskId, 'API Error: 402 Workspace has insufficient balance. Top up to continue.')
+    const result = reconcileKnowledgeCuration(root)
+    expect(result.invalid).toBe(0)
+    const block = JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation
+    expect(block.state).toBe('ROUTED')
+    expect(block.invalid_attempts ?? 0).toBe(0)
+  })
+
+  it('PAUSED: an in_progress mission is not advanced to RUNNING', () => {
+    const { taskId } = suiteWithReviewableM1('paused')
+    state.db!.prepare("UPDATE tasks SET status = 'in_progress' WHERE id = ?").run(taskId)
+    const result = reconcileKnowledgeCuration(root)
+    expect(result.running).toBe(0)
+    expect(JSON.parse(taskById(taskId).metadata).agentos_knowledge_curation.state).toBe('ROUTED')
+  })
+
+  it('unmanaged project (no command record) preserves existing reconciliation behavior', () => {
+    const suite = createKnowledgeSuiteObjective({ workspaceId, root })
+    const m1 = suite.missions.find(m => m.key === 'm1')!
+    state.db!.prepare("UPDATE tasks SET status = 'review' WHERE id = ?").run(m1.taskId)
+    addComment(m1.taskId, validPackEnvelope(m1.packId))
+    const result = reconcileKnowledgeCuration(root)
+    expect(result.ingested).toBe(1)
+    expect(JSON.parse(taskById(m1.taskId).metadata).agentos_knowledge_curation.state).toBe('COMPLETE')
+  })
+
+  it('a paused AgentOS project does not block ingestion for another workspace/project', () => {
+    const held = createKnowledgeSuiteObjective({ workspaceId: 1, root })
+    const heldM1 = held.missions.find(m => m.key === 'm1')!
+    setProjectCommand(held.projectId, 'paused', 1)
+    state.db!.prepare("UPDATE tasks SET status = 'review' WHERE id = ?").run(heldM1.taskId)
+    addComment(heldM1.taskId, validPackEnvelope(heldM1.packId))
+
+    const other = createKnowledgeSuiteObjective({ workspaceId: 2, root })
+    const otherM1 = other.missions.find(m => m.key === 'm1')!
+    state.db!.prepare('UPDATE tasks SET status = ? WHERE id = ? AND workspace_id = ?').run('review', otherM1.taskId, 2)
+    state.db!.prepare('INSERT INTO comments (task_id, author, content, created_at, workspace_id) VALUES (?, ?, ?, ?, ?)')
+      .run(otherM1.taskId, 'specialist-gamut', validPackEnvelope(otherM1.packId), Math.floor(Date.now() / 1000), 2)
+
+    const result = reconcileKnowledgeCuration(root)
+    expect(result.ingested).toBe(1)
+    expect(JSON.parse(taskById(heldM1.taskId).metadata).agentos_knowledge_curation.state).toBe('ROUTED')
+    expect(JSON.parse(taskById(otherM1.taskId).metadata).agentos_knowledge_curation.state).toBe('COMPLETE')
   })
 })
 
