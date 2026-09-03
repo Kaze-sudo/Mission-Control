@@ -106,6 +106,12 @@ export interface GamutHostSession {
 export interface GamutRunResult {
   sessionId: string
   text: string | null
+  /** True when the host marked the terminal assistant turn as a provider/API
+   *  execution failure (e.g. OpenRouter 402 insufficient balance). Such a
+   *  session ended without producing usable model output. */
+  failed?: boolean
+  /** Structured host error marker when one exists (observed `apiError` value). */
+  errorCode?: string | null
 }
 
 function baseUrl(): string {
@@ -138,7 +144,35 @@ export async function probeGamutHost(timeoutMs = 2000): Promise<boolean> {
     return false
   }
 }
-function extractAssistantText(payload: unknown): string | null {
+export interface GamutSessionInspection {
+  text: string | null
+  /** True when the terminal assistant message is a provider/API execution
+   *  failure rather than authored model output. */
+  failed: boolean
+  /** Structured host error marker when one exists (e.g. `apiError`). */
+  errorCode: string | null
+}
+
+/**
+ * Inspect a finished Gamut session's messages and classify its terminal
+ * assistant result. Detection hierarchy (result-truthfulness contract):
+ *
+ *   1. Structured native signal — the host marks assistant turns that failed
+ *      a provider/API call with a top-level `apiError` field (observed value
+ *      "unknown", with `usage` zeroed for such turns). This is the primary,
+ *      authoritative signal and never requires parsing display text.
+ *   2. Narrow compatibility fallback — a terminal assistant message whose text
+ *      starts with the host SDK's machine error envelope (`API Error: <code>`)
+ *      is treated as a failure even if a future host version omits the
+ *      `apiError` marker. The `^API Error:\s*\d{3}` anchor only matches the
+ *      host's rendered error format, so model-authored prose that merely
+ *      *discusses* an "API Error: 402" mid-response is never rejected.
+ *
+ * Anything else with terminal assistant text is a successful authored output;
+ * a session with no terminal assistant text is reported as text-less (the
+ * caller treats it as a generic execution failure, never as success).
+ */
+export function inspectGamutSessionResult(payload: unknown): GamutSessionInspection {
   const list = Array.isArray(payload)
     ? payload
     : payload && typeof payload === 'object' && Array.isArray((payload as { messages?: unknown[] }).messages)
@@ -147,14 +181,26 @@ function extractAssistantText(payload: unknown): string | null {
   for (let i = list.length - 1; i >= 0; i--) {
     const item = list[i] as Record<string, unknown>
     if (item?.type !== 'assistant') continue
-    const content = item.content
-    if (typeof content === 'string' && content.trim()) return content.trim()
-    if (content && typeof content === 'object') {
-      const text = (content as Record<string, unknown>).text
-      if (typeof text === 'string' && text.trim()) return text.trim()
+    const rawContent = item.content
+    let text: string | null = null
+    if (typeof rawContent === 'string' && rawContent.trim()) {
+      text = rawContent.trim()
+    } else if (rawContent && typeof rawContent === 'object') {
+      const contentText = (rawContent as Record<string, unknown>).text
+      if (typeof contentText === 'string' && contentText.trim()) text = contentText.trim()
     }
+    if (text === null) continue
+
+    const apiError = item.apiError
+    if (apiError !== undefined && apiError !== null) {
+      return { text, failed: true, errorCode: String(apiError) }
+    }
+    if (/^API Error:\s*\d{3}\b/.test(text)) {
+      return { text, failed: true, errorCode: null }
+    }
+    return { text, failed: false, errorCode: null }
   }
-  return null
+  return { text: null, failed: false, errorCode: null }
 }
 
 async function getSession(slug: string, sessionId: string): Promise<GamutHostSession | null> {
@@ -204,7 +250,11 @@ export async function runGamutAgent(input: {
     }
     if (session && session.isActive === false) {
       const messages = await getSessionMessages(input.slug, sessionId)
-      return { sessionId, text: extractAssistantText(messages) }
+      const inspection = inspectGamutSessionResult(messages)
+      if (inspection.failed) {
+        return { sessionId, text: inspection.text, failed: true, errorCode: inspection.errorCode }
+      }
+      return { sessionId, text: inspection.text }
     }
     await new Promise(resolve => setTimeout(resolve, pollMs))
   }

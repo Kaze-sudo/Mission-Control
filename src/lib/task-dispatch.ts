@@ -28,13 +28,13 @@ import type Database from 'better-sqlite3'
 const AGENT_DISPATCH_ACCEPT_TIMEOUT_MS = 60_000
 
 /** Sync task to GitHub/GNAP and broadcast escalation if task failed */
-function syncAndEscalateIfFailed(task: { id: number; title: string; status: string; priority: string; project_id?: number | null; workspace_id: number; description?: string | null }, newStatus: string, errorMsg?: string, dispatchAttempts?: number): void {
+function syncAndEscalateIfFailed(task: { id: number; title: string; status: string; priority: string; project_id?: number | null; workspace_id: number; description?: string | null }, newStatus: string, errorMsg?: string, dispatchAttempts?: number, reasonOverride?: string): void {
   syncTaskOutbound({ ...task, status: newStatus }, task.workspace_id)
   if (newStatus === 'failed') {
     eventBus.broadcast('task.escalated', {
       id: task.id,
       title: task.title,
-      reason: errorMsg?.includes('Aegis rejected') ? 'max_aegis_rejections' : errorMsg?.includes('stuck') ? 'stale_task_max_retries' : 'max_dispatch_retries',
+      reason: reasonOverride ?? (errorMsg?.includes('Aegis rejected') ? 'max_aegis_rejections' : errorMsg?.includes('stuck') ? 'stale_task_max_retries' : 'max_dispatch_retries'),
       dispatch_attempts: dispatchAttempts ?? 0,
       error_message: (errorMsg ?? '').substring(0, 500),
       workspace_id: task.workspace_id,
@@ -1472,6 +1472,20 @@ async function callGamutViaHost(task: DispatchableTask, prompt: string): Promise
 
   logger.info({ taskId: task.id, agent: descriptor.name, gamutSlug: slug }, 'Dispatching task through Gamut host API')
   const result = await runGamutAgent({ slug, message: prompt, timeoutMs: 300_000 })
+  if (result.failed) {
+    // Provider/API execution failure (e.g. OpenRouter 402 insufficient
+    // balance): the native session ended but produced no usable model output.
+    // This must NOT enter the success/review path as authored output.
+    // Non-retryable: automatic retries cannot fix a provider prerequisite
+    // failure (exhausted balance, auth, unavailable model) and would only
+    // spawn repeated failed sessions.
+    const failure = new Error(
+      result.text || `Gamut provider execution failed${result.errorCode ? ` (${result.errorCode})` : ''}`,
+    )
+    ;(failure as Error & { nonRetryable?: boolean; nativeSessionId?: string }).nonRetryable = true
+    ;(failure as Error & { nonRetryable?: boolean; nativeSessionId?: string }).nativeSessionId = result.sessionId
+    throw failure
+  }
   return { text: result.text, sessionId: result.sessionId }
 }
 async function callHermesViaProfile(
@@ -1897,6 +1911,22 @@ export async function requeueStaleTasks(): Promise<{ ok: boolean; message: strin
       ? `Found ${staleTasks.length} stale task(s) but agents still online`
       : `Requeued ${requeued}, failed ${failed} of ${staleTasks.length} stale task(s)`,
   }
+}
+
+/**
+ * True when a dispatch failure is terminal: the retry budget is exhausted, or
+ * the failure is explicitly non-retryable (provider/API prerequisite failure
+ * such as exhausted credit, auth failure, or an unavailable model — automatic
+ * retries cannot fix these and would only spawn repeated failed native
+ * sessions). Non-retryable failures are terminal from the very first attempt.
+ */
+export function dispatchFailureIsTerminal(input: {
+  currentAttempts: number
+  maxDispatchRetries?: number
+  nonRetryable?: boolean
+}): boolean {
+  const max = input.maxDispatchRetries ?? 5
+  return input.currentAttempts + 1 >= max || input.nonRetryable === true
 }
 
 export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: string }> {
@@ -2332,17 +2362,32 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         .get(task.id, task.workspace_id) as { dispatch_attempts: number } | undefined)?.dispatch_attempts ?? 0
       const newAttempts = currentAttempts + 1
       const maxDispatchRetries = 5
+      // Non-retryable provider/API execution failures (exhausted credit, auth
+      // failure, unavailable model) never auto-retry — retries cannot fix them
+      // and would only spawn repeated failed native sessions.
+      const nonRetryable = (err as { nonRetryable?: boolean }).nonRetryable === true
 
-      if (newAttempts >= maxDispatchRetries) {
-        const failureMessage = `Dispatch failed ${newAttempts} times. Last: ${errorMsg.substring(0, 5000)}`
+      if (dispatchFailureIsTerminal({ currentAttempts, maxDispatchRetries, nonRetryable })) {
+        // For a non-retryable provider failure the raw diagnostic IS the truth
+        // (e.g. "API Error: 402 Workspace has insufficient balance"); do not
+        // rewrite it into a misleading "Dispatch failed N times" summary.
+        const failureMessage = nonRetryable
+          ? errorMsg.substring(0, 5000)
+          : `Dispatch failed ${newAttempts} times. Last: ${errorMsg.substring(0, 5000)}`
         if (delegationId) {
+          // Preserve the native session id + provider diagnostic on the failed
+          // delegation as the historical execution record.
+          const nativeSessionId = typeof (err as { nativeSessionId?: unknown }).nativeSessionId === 'string'
+            ? (err as { nativeSessionId?: string }).nativeSessionId
+            : undefined
           updateDelegation(delegationId, task.workspace_id, {
             status: 'failed',
+            nativeSessionId,
             errorMessage: failureMessage,
             completed: true,
           })
         }
-        // Too many failures — move to failed
+        // Terminal execution failure — move to failed. Never review/completed.
         db.prepare('UPDATE tasks SET status = ?, error_message = ?, dispatch_attempts = ?, updated_at = ? WHERE id = ? AND workspace_id = ?')
           .run('failed', failureMessage, newAttempts, Math.floor(Date.now() / 1000), task.id, task.workspace_id)
 
@@ -2351,10 +2396,10 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
           status: 'failed',
           previous_status: 'in_progress',
           error_message: failureMessage,
-          reason: 'max_dispatch_retries_exceeded',
+          reason: nonRetryable ? 'non_retryable_dispatch_failure' : 'max_dispatch_retries_exceeded',
           workspace_id: task.workspace_id,
         })
-        syncAndEscalateIfFailed(task, 'failed', `Dispatch failed ${newAttempts} times`, newAttempts)
+        syncAndEscalateIfFailed(task, 'failed', failureMessage, newAttempts, nonRetryable ? 'non_retryable_dispatch_failure' : undefined)
       } else {
         if (delegationId) {
           updateDelegation(delegationId, task.workspace_id, {
