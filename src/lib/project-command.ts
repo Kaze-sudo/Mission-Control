@@ -227,3 +227,57 @@ export function checkAgentOSDispatchGuard(input: {
   if (agentCount >= limits.agent) return { allowed: false, reason: `Agent concurrency limit reached (${agentCount}/${limits.agent})`, state: command.state, counts, limits }
   return { allowed: true, reason: null, state: command.state, counts, limits }
 }
+
+export interface AgentosLifecycleGate {
+  allowed: boolean
+  reason: string | null
+  /** True when the project has an agentos_project_command record (AgentOS-managed). */
+  managed: boolean
+  state: ProjectCommandState | null
+}
+
+/**
+ * Shared command-state gate for AUTOMATED AgentOS lifecycle advancement.
+ *
+ * AgentOS is the Company Commander: for AgentOS-managed project work, Project
+ * Command governs whether the project's automated lifecycle is allowed to
+ * advance — not only dispatch, but also downstream automatic stages such as
+ * quality review. A project whose command state is not `active` must not have
+ * its tasks automatically advanced through those stages merely because a
+ * global background scheduler is still running.
+ *
+ * A project is AgentOS-managed when an `agentos_project_command` record
+ * exists for it. Projects WITHOUT a command record are not AgentOS-managed and
+ * are never gated here — generic Mission Control behavior (including generic
+ * Aegis quality review) is preserved exactly.
+ *
+ * NOTE: this intentionally differs from the dispatch-only guard
+ * (`checkAgentOSDispatchGuard`), which routes every AgentOS task through
+ * `getProjectCommand` and treats a missing record as `draft`. This gate is
+ * scoped to projects that opted into AgentOS command control.
+ */
+export function mayAgentosLifecycleAdvance(input: {
+  projectId: number | null
+  workspaceId: number
+}): AgentosLifecycleGate {
+  if (!input.projectId) {
+    return { allowed: true, reason: null, managed: false, state: null }
+  }
+  const db = getDatabase()
+  const row = db.prepare(
+    'SELECT state FROM agentos_project_command WHERE project_id = ? AND workspace_id = ?',
+  ).get(input.projectId, input.workspaceId) as { state: string } | undefined
+  if (!row) {
+    return { allowed: true, reason: null, managed: false, state: null }
+  }
+  const state = row.state as ProjectCommandState
+  if (state === 'active') {
+    return { allowed: true, reason: null, managed: true, state }
+  }
+  return {
+    allowed: false,
+    reason: `Project command state is ${state}; ACTIVE is required for automated AgentOS lifecycle advancement`,
+    managed: true,
+    state,
+  }
+}

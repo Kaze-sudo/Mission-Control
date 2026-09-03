@@ -18,7 +18,7 @@ import { classifyModelProvider, getDispatchModelId, getModelByAlias } from './mo
 import { getMiniMaxApiKey, resolveMiniMaxEndpoint } from './minimax'
 import { getPlatoonCommander } from './platoon-commanders'
 import { runGamutAgent } from './gamut-host'
-import { checkAgentOSDispatchGuard } from './project-command'
+import { checkAgentOSDispatchGuard, mayAgentosLifecycleAdvance } from './project-command'
 import { promoteReadyObjectiveMissions, reconcileObjectiveStatuses } from './objective-planning'
 import { createDelegationForTask, getLatestDelegationForTask, updateDelegation } from './delegation-ledger'
 import { authorizeAgentOSTaskDispatch, missionMaximumExposure, reserveMissionCost, releaseReservationForTask } from './execution-authorization'
@@ -1665,6 +1665,25 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
   const results: Array<{ id: number; verdict: string; error?: string }> = []
 
   for (const task of tasks) {
+    // AgentOS Project Command gate: a paused (or otherwise non-active)
+    // AgentOS-managed project must not have completed work automatically
+    // advanced through quality review. Generic Mission Control tasks (no
+    // agentos_project_command record) are unaffected.
+    const lifecycleGate = mayAgentosLifecycleAdvance({ projectId: task.project_id, workspaceId: task.workspace_id })
+    if (!lifecycleGate.allowed) {
+      db_helpers.logActivity(
+        'agentos_aegis_held',
+        'task',
+        task.id,
+        'agentos',
+        `Aegis held review: ${lifecycleGate.reason}`,
+        { project_id: task.project_id, state: lifecycleGate.state },
+        task.workspace_id
+      )
+      results.push({ id: task.id, verdict: 'held' })
+      continue
+    }
+
     // Move to quality_review to prevent re-processing
     db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND workspace_id = ?')
       .run('quality_review', Math.floor(Date.now() / 1000), task.id, task.workspace_id)
@@ -1718,6 +1737,28 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
       }
 
       const verdict = parseReviewVerdict(agentResponse.text)
+
+      // Re-check Project Command before applying any verdict: the project may
+      // have been paused while the review agent was running. A paused
+      // AgentOS-managed project must not advance to done/reassigned
+      // automatically, so hold the verdict and leave the task pending for a
+      // future pass (no quality_reviews record is written for a held review).
+      const applyGate = mayAgentosLifecycleAdvance({ projectId: task.project_id, workspaceId: task.workspace_id })
+      if (!applyGate.allowed) {
+        db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND workspace_id = ?')
+          .run('review', Math.floor(Date.now() / 1000), task.id, task.workspace_id)
+        db_helpers.logActivity(
+          'agentos_aegis_held',
+          'task',
+          task.id,
+          'agentos',
+          `Aegis verdict held: ${applyGate.reason}`,
+          { project_id: task.project_id, state: applyGate.state },
+          task.workspace_id
+        )
+        results.push({ id: task.id, verdict: 'held' })
+        continue
+      }
 
       // Insert quality review record
       db.prepare(`
