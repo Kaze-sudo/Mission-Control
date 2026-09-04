@@ -90,7 +90,36 @@ function seedSchema(db: InstanceType<typeof Database>): void {
     CREATE TABLE tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, status TEXT,
       project_id INTEGER, assigned_to TEXT, workspace_id INTEGER,
-      created_at INTEGER, updated_at INTEGER
+      created_at INTEGER, updated_at INTEGER, metadata TEXT
+    );
+    CREATE TABLE agentos_objectives (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      workspace_id INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'planned',
+      plan_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE TABLE agentos_delegations (
+      id TEXT PRIMARY KEY,
+      task_id INTEGER NOT NULL,
+      project_id INTEGER,
+      workspace_id INTEGER NOT NULL,
+      objective_id INTEGER,
+      platoon_id TEXT,
+      specialist_name TEXT,
+      routing_agent_name TEXT,
+      runtime_type TEXT,
+      status TEXT NOT NULL DEFAULT 'claimed',
+      native_session_id TEXT,
+      native_run_id TEXT,
+      attempt INTEGER NOT NULL DEFAULT 1,
+      result_summary TEXT,
+      error_message TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      completed_at INTEGER
     );
   `)
 }
@@ -244,5 +273,37 @@ describe('buildAgentRegistrySnapshot', () => {
     const gamut = snapshot.ecosystems.find(e => e.id === 'gamut')!
     const chief = gamut.agents.find(a => a.externalAgentId === gamutChief.id)!
     expect(chief.lastSeen).toBe(1234)
+  })
+
+  it('embeds canonical recent executions per routing agent', () => {
+    const db = state.db!
+    db.prepare("INSERT INTO agentos_objectives (id, project_id, workspace_id, title, status) VALUES (1, 1, 1, 'Ops objective', 'active')").run()
+    db.prepare("INSERT INTO tasks (id, title, status, project_id, assigned_to, workspace_id, created_at, updated_at, metadata) VALUES (1, 'First mission', 'done', 1, 'agentos:gamut:chief-of-staff', 1, 900, 1200, '{}')").run()
+    db.prepare("INSERT INTO tasks (id, title, status, project_id, assigned_to, workspace_id, created_at, updated_at, metadata) VALUES (2, 'Second mission', 'failed', 1, 'agentos:gamut:chief-of-staff', 1, 1300, 1600, '{}')").run()
+    db.prepare("INSERT INTO tasks (id, title, status, project_id, assigned_to, workspace_id, created_at, updated_at, metadata) VALUES (3, 'Enemy mission', 'done', 1, 'agentos:gamut:enemy-ai', 1, 1000, 1100, '{}')").run()
+    for (const row of [
+      ['del-a', 1, 'agentos:gamut:chief-of-staff', 'completed', 900, 1200, 1200],
+      ['del-b', 2, 'agentos:gamut:chief-of-staff', 'failed', 1300, 1600, 1600],
+      ['del-c', 3, 'agentos:gamut:enemy-ai', 'completed', 1000, 1100, 1100],
+    ] as const) {
+      db.prepare(`
+        INSERT INTO agentos_delegations (
+          id, task_id, project_id, workspace_id, objective_id, platoon_id,
+          routing_agent_name, status, attempt, created_at, updated_at, completed_at
+        ) VALUES (?, ?, 1, 1, 1, 'gamut', ?, ?, 1, ?, ?, ?)
+      `).run(row[0], row[1], row[2], row[3], row[4], row[5], row[6])
+    }
+
+    const snapshot = buildAgentRegistrySnapshot(workspaceId)
+    const gamut = snapshot.ecosystems.find(e => e.id === 'gamut')!
+    const chief = gamut.agents.find(a => a.externalAgentId === gamutChief.id)!
+    // Newest first, capped at five, scoped to this routing agent only.
+    expect(chief.recentRuns.map(run => run.delegationId)).toEqual(['del-b', 'del-a'])
+    expect(chief.recentRuns[0].taskTitle).toBe('Second mission')
+    expect(chief.recentRuns[0].state).toBe('FAILED')
+    expect(chief.recentRuns[1].state).toBe('COMPLETED')
+    expect(chief.recentRuns[0].projectName).toBe('AgentOS Ops')
+    const enemy = gamut.agents.find(a => a.externalAgentId === gamutEnemy.id)!
+    expect(enemy.recentRuns.map(run => run.delegationId)).toEqual(['del-c'])
   })
 })

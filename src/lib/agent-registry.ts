@@ -37,6 +37,8 @@ import { discoverPlatoonCommanders } from './platoon-commanders'
 import { getGlobalAgentRoster } from './global-agent-roster'
 import { buildRosterView } from './agent-roster-sync'
 import { SYNCABLE_PLATOONS } from './agent-roster-sync'
+import { listRecentRunsForAgent } from './agentos-runs'
+import type { AgentOSRun } from './agentos-runs'
 
 /** Transport path AgentOS uses to execute work in each ecosystem. */
 const DISPATCH_PATHS: Record<string, string> = {
@@ -83,6 +85,8 @@ export interface AgentRegistryRecord {
   assignment: AgentRegistryAssignment | null
   performance: { tasks: number; completed: number; completionRate: number | null }
   lastSeen: number | null
+  /** Recent executions (delegations) for this agent, from the canonical run model. */
+  recentRuns: AgentOSRun[]
 }
 
 export interface RegistryEcosystemStatus {
@@ -223,6 +227,17 @@ export function buildAgentRegistrySnapshot(
     }
 
     const routingAgentName = view?.routingAgentName ?? null
+    // Recent executions come from the canonical run read model — never a
+    // second implementation. Guarded: absent delegation tables (e.g.
+    // pre-migration fixtures) must never break the registry snapshot.
+    let recentRuns: AgentOSRun[] = []
+    if (routingAgentName) {
+      try {
+        recentRuns = listRecentRunsForAgent({ workspaceId, agentName: routingAgentName, limit: 5 })
+      } catch {
+        recentRuns = []
+      }
+    }
     const records = byEcosystem.get(agent.platoonId) ?? []
     records.push({
       externalAgentId: agent.id,
@@ -245,6 +260,10 @@ export function buildAgentRegistrySnapshot(
       assignment: routingAgentName ? (assignmentByRoutingName.get(routingAgentName) ?? null) : null,
       performance: agent.performance,
       lastSeen: routingAgentName ? (lastSeenByName.get(routingAgentName) ?? null) : null,
+      // Consumer of the canonical run read model — never a second implementation.
+      // Guarded: absent delegation tables (e.g. pre-migration fixtures) must
+      // never break the registry snapshot.
+      recentRuns,
     })
     byEcosystem.set(agent.platoonId, records)
   }

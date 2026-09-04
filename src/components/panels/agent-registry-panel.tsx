@@ -44,6 +44,23 @@ interface RegistryAgent {
   } | null
   performance: { tasks: number; completed: number; completionRate: number | null }
   lastSeen: number | null
+  recentRuns: Array<{
+    id: string
+    taskId: number
+    taskTitle: string
+    projectId: number | null
+    projectName: string | null
+    state: string
+    ecosystem: string | null
+    attempt: number | null
+    delegationStatus: string | null
+    taskStatus: string
+    errorMessage: string | null
+    createdAt: number | null
+    updatedAt: number | null
+    completedAt: number | null
+    durationSeconds: number | null
+  }>
 }
 
 interface EcosystemStatus {
@@ -92,6 +109,27 @@ function availabilityTone(availability: RegistryAgent['availability']): 'good' |
   if (availability === 'busy') return 'warn'
   if (availability === 'error') return 'bad'
   return 'neutral'
+}
+
+function runStateTone(state: string): 'good' | 'warn' | 'bad' | 'neutral' | 'info' {
+  switch (state) {
+    case 'COMPLETED': return 'good'
+    case 'RUNNING':
+    case 'REVIEWING': return 'info'
+    case 'QUEUED':
+    case 'HELD':
+    case 'WAITING':
+    case 'RETRYING': return 'warn'
+    case 'FAILED': return 'bad'
+    default: return 'neutral'
+  }
+}
+
+function fmtDuration(seconds: number | null): string {
+  if (seconds === null || seconds === undefined) return '—'
+  if (seconds < 60) return `${seconds}s`
+  const m = Math.floor(seconds / 60)
+  return m < 60 ? `${m}m ${seconds % 60}s` : `${Math.floor(m / 60)}h ${m % 60}m`
 }
 
 export function AgentRegistryPanel() {
@@ -356,6 +394,41 @@ export function AgentRegistryPanel() {
                           {agent.blockReason && (
                             <div className={`mt-1.5 rounded border px-2 py-1 text-[10px] ${agent.dispatchable ? 'border-emerald-500/30 text-emerald-400' : 'border-amber-500/30 bg-amber-500/5 text-amber-200'}`}>
                               {agent.blockReason}
+                            </div>
+                          )}
+                        </div>
+                        <div className="md:col-span-2 xl:col-span-4 rounded-lg border border-border/40 bg-background/30 p-2.5">
+                          <div className="flex items-center justify-between">
+                            <div className="text-[9px] uppercase tracking-wider text-muted-foreground">Recent executions (canonical run ledger)</div>
+                            {agent.recentRuns.length > 0 && <span className="text-[9px] text-muted-foreground">newest {agent.recentRuns.length} shown</span>}
+                          </div>
+                          {agent.recentRuns.length === 0 ? (
+                            <div className="mt-1.5 text-muted-foreground">No executions traced for this agent yet.</div>
+                          ) : (
+                            <div className="mt-1.5 space-y-1">
+                              {agent.recentRuns.map(run => (
+                                <div key={run.id} className="flex flex-wrap items-center gap-x-3 gap-y-0.5 rounded border border-border/40 bg-background/40 px-2 py-1">
+                                  <Chip tone={runStateTone(run.state)}>{run.state}</Chip>
+                                  <span className="min-w-0 flex-1 truncate text-[11px] text-foreground/85" title={`Task #${run.taskId}: ${run.taskTitle}`}>
+                                    Task #{run.taskId} · {run.taskTitle}
+                                  </span>
+                                  {run.projectId !== null && run.projectId !== undefined ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => navigateToProject(run.projectId!)}
+                                      className="cursor-pointer text-[10px] text-primary underline-offset-2 hover:underline"
+                                    >
+                                      {run.projectName || `#${run.projectId}`}
+                                    </button>
+                                  ) : <span className="text-[10px] text-muted-foreground">no project</span>}
+                                  {run.ecosystem && <span className="text-[10px] text-muted-foreground">{run.ecosystem}</span>}
+                                  <span className="text-[10px] text-muted-foreground">{fmtDuration(run.durationSeconds)}</span>
+                                  <span className="text-[10px] text-muted-foreground">{formatTime(run.updatedAt)}</span>
+                                  {run.state === 'FAILED' && run.errorMessage && (
+                                    <span className="w-full truncate text-[10px] text-rose-400/90" title={run.errorMessage}>{run.errorMessage}</span>
+                                  )}
+                                </div>
+                              ))}
                             </div>
                           )}
                         </div>
