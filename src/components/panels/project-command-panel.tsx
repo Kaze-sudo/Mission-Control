@@ -1,8 +1,10 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api-client'
+import { parseProjectQueryParam, resolveProjectSelection } from '@/lib/project-link'
 
 interface Project { id: number; name: string; slug: string }
 interface CommandRecord {
@@ -63,8 +65,13 @@ type ArsenalTab = 'recommendations'|'registry'|'coverage'|'changes'|'reviews'|'h
 const STATES: CommandRecord['state'][] = ['draft','ready','active','paused','blocked']
 
 export function ProjectCommandPanel() {
+  const router=useRouter()
+  const pathname=usePathname()
+  const searchParams=useSearchParams()
+  const paramApplied=useRef(false)
   const [projects,setProjects]=useState<Project[]>([])
   const [projectId,setProjectId]=useState<number|null>(null)
+  const [projectUrlNotice,setProjectUrlNotice]=useState<string|null>(null)
   const [command,setCommand]=useState<CommandRecord|null>(null)
   const [bindings,setBindings]=useState<Binding[]>([])
   const [tasks,setTasks]=useState<Task[]>([])
@@ -106,8 +113,54 @@ export function ProjectCommandPanel() {
   const [error,setError]=useState<string|null>(null)
   const loadProjects=useCallback(async()=>{
     const data=await apiFetch<{projects?:Project[]}>('/api/projects')
-    const next=data.projects||[]; setProjects(next); setProjectId(current=>current??next[0]?.id??null)
-  },[])
+    const next=data.projects||[]
+    setProjects(next)
+    if(!paramApplied.current){
+      // First load: honor ?project=<id> deep links (bookmark/refresh-safe).
+      paramApplied.current=true
+      const resolution=resolveProjectSelection({rawParam:searchParams.get('project'),projects:next})
+      if(resolution.requestedInvalid){
+        setProjectUrlNotice(`Requested project #${resolution.requestedId} was not found — showing the first available project`)
+      } else {
+        setProjectUrlNotice(null)
+      }
+      setProjectId(resolution.selectedId)
+    } else {
+      setProjectId(current=>current??next[0]?.id??null)
+    }
+  },[searchParams])
+
+  // Keep the URL in sync when the operator switches projects manually so the
+  // view can be bookmarked/shared/refreshed. Uses replace to avoid history spam.
+  const writeProjectParam=useCallback((id:number|null)=>{
+    const params=new URLSearchParams(searchParams.toString())
+    if(id!==null&&Number.isFinite(id)&&id>0)params.set('project',String(id))
+    else params.delete('project')
+    const query=params.toString()
+    router.replace(query?`${pathname}?${query}`:pathname,{scroll:false})
+  },[pathname,router,searchParams])
+
+  // Follow later ?project= changes (browser back/forward, external links)
+  // after the initial application. Manual changes never loop because the
+  // effect only adopts a value that differs from the current selection.
+  useEffect(()=>{
+    if(!paramApplied.current)return
+    const requested=parseProjectQueryParam(searchParams.get('project'))
+    if(requested===null){setProjectUrlNotice(null);return}
+    if(!projects.some(p=>p.id===requested)){
+      setProjectUrlNotice(`Requested project #${requested} was not found`)
+      return
+    }
+    setProjectUrlNotice(null)
+    setProjectId(prev=>prev===requested?prev:requested)
+  },[searchParams,projects])
+
+  const handleProjectChange=(value:string)=>{
+    const id=value?Number(value):null
+    setProjectId(id)
+    setProjectUrlNotice(null)
+    writeProjectParam(id)
+  }
 
   const loadContext=useCallback(async(id:number|null)=>{
     if(!id){setCommand(null);setBindings([]);setTasks([]);setHandoffs([]);setForce(null);setObjectives([]);setDelegations([]);setRoster([]);setRosterSummary(null);return}
@@ -198,7 +251,7 @@ export function ProjectCommandPanel() {
       else if(data.error)setActionError(data.error)
     }catch(err){setActionError(err instanceof Error?err.message:'Failed to load execution preview')}
     finally{setExecBusy(false)}
-  },[apiFetch,projectId])
+  },[projectId])
 
   const runExecAction=useCallback(async(action:'preview'|'refresh'|'approve'|'deny',objectiveId:number,extra:Record<string,unknown>={})=>{
     if(!projectId)return
@@ -219,7 +272,7 @@ export function ProjectCommandPanel() {
       else if(data.error)setActionError(data.error)
     }catch(err){setActionError(err instanceof Error?err.message:'Execution action failed')}
     finally{setExecBusy(false)}
-  },[apiFetch,loadContext,projectId])
+  },[loadContext,projectId])
 
   const runKnowledgeAction=useCallback(async(payload:{action:'create'|'retry'|'reconcile';packId?:string})=>{
     setCurationBusy(true);setActionError(null);setActionMessage(null)
@@ -304,11 +357,13 @@ export function ProjectCommandPanel() {
           <p className="text-sm text-muted-foreground mt-1">Activate projects, control routing policy, watch force readiness, missions, handoffs, and concurrency from one screen.</p>
         </div>
         <label className="text-xs text-muted-foreground min-w-64">Project
-          <select className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" value={projectId??''} onChange={e=>setProjectId(e.target.value?Number(e.target.value):null)}>
+          <select className="mt-1 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground" value={projectId??''} onChange={e=>handleProjectChange(e.target.value)}>
+            {projects.length===0&&<option value="">No projects</option>}
             {projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </label>
       </div>
+      {projectUrlNotice&&<div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">{projectUrlNotice}</div>}
       {error&&<div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</div>}
       {loading&&<div className="text-sm text-muted-foreground">Loading command picture…</div>}
       {!loading&&command&&(
@@ -544,7 +599,7 @@ function MetricCard({label,value,note}:{label:string;value:string;note:string}){
 function MiniMetric({label,value}:{label:string;value:number}){return <div className="rounded-lg bg-secondary/40 p-3"><div className="text-xl font-semibold">{value}</div><div className="text-[10px] uppercase tracking-wider text-muted-foreground">{label}</div></div>}
 function ArsenalStatusBadge({status}:{status:string}){const tone=status==='FILLED'?'bg-emerald-500/15 text-emerald-400':status==='PARTIALLY_COVERED'?'bg-amber-500/15 text-amber-400':status==='OPEN'?'bg-rose-500/15 text-rose-400':'bg-secondary/50 text-muted-foreground';return <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-mono uppercase ${tone}`}>{status}</span>}
 function ArsenalRecommendations({recommendations}:{recommendations:Array<{id:string;name:string;path:string;type:string;score:number;primaryCapability:string;capabilities:string[]}>}){return <div>
-  <p className="text-xs text-muted-foreground mb-3">AgentOS ranks D:\AI resources against this project's capability demand and attaches the best matches to routed missions. Manual-only and reference resources are never auto-selected.</p>
+  <p className="text-xs text-muted-foreground mb-3">AgentOS ranks D:\AI resources against this project&apos;s capability demand and attaches the best matches to routed missions. Manual-only and reference resources are never auto-selected.</p>
   <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
     {recommendations.slice(0,12).map(resource=><div key={resource.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
       <div className="flex items-start justify-between gap-2"><div><div className="text-sm font-medium">{resource.name}</div><div className="text-[10px] text-muted-foreground mt-1">{resource.type} · {resource.primaryCapability}</div></div><span className="text-xs font-mono">{resource.score}</span></div>

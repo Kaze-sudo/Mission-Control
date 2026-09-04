@@ -3,7 +3,7 @@
 import { useCallback, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api-client'
-import { useNavigateToPanel } from '@/lib/navigation'
+import { useNavigateToPanel, useNavigateToProjectCommand } from '@/lib/navigation'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 
 /**
@@ -119,6 +119,7 @@ function Metric({ label, value, sub }: { label: string; value: React.ReactNode; 
 
 export function AgentOSOverviewPanel() {
   const navigateToPanel = useNavigateToPanel()
+  const navigateToProject = useNavigateToProjectCommand()
   const [status, setStatus] = useState<AgentOSStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
@@ -227,16 +228,37 @@ export function AgentOSOverviewPanel() {
               </div>
               {status.attention.length > 0 && (
                 <div className="mt-2.5 space-y-1.5">
-                  {status.attention.slice(0, 5).map(item => (
-                    <div key={item.id} className={`rounded border px-2.5 py-1.5 text-xs ${item.level === 'error' ? 'border-rose-500/30 bg-rose-500/5 text-rose-300' : 'border-amber-500/30 bg-amber-500/5 text-amber-200'}`}>
-                      <div className="flex items-start justify-between gap-2">
-                        <span className="font-medium">{item.title}</span>
-                        <span className="shrink-0 text-[9px] uppercase text-muted-foreground/60">{formatTime(item.at)}</span>
-                      </div>
-                      {item.detail && <div className="mt-0.5 text-[11px] text-foreground/70 break-words">{item.detail}</div>}
-                      {item.projectName && <div className="mt-0.5 text-[10px] text-muted-foreground">{item.projectName}{item.taskId ? ` · task #${item.taskId}` : ''}</div>}
-                    </div>
-                  ))}
+                  {status.attention.slice(0, 5).map(item => {
+                    const toneClass = item.level === 'error' ? 'border-rose-500/30 bg-rose-500/5 text-rose-300' : 'border-amber-500/30 bg-amber-500/5 text-amber-200'
+                    const canLink = item.projectId !== null && item.projectId !== undefined
+                    const inner = (
+                      <>
+                        <div className="flex items-start justify-between gap-2">
+                          <span className="font-medium">{item.title}</span>
+                          <span className="shrink-0 text-[9px] uppercase text-muted-foreground/60">{formatTime(item.at)}</span>
+                        </div>
+                        {item.detail && <div className="mt-0.5 text-[11px] text-foreground/70 break-words">{item.detail}</div>}
+                        {item.projectName && <div className="mt-0.5 text-[10px] text-muted-foreground">{item.projectName}{item.taskId ? ` · task #${item.taskId}` : ''}{canLink ? ' · open in Project Command →' : ''}</div>}
+                      </>
+                    )
+                    return canLink
+                      ? (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => navigateToProject(item.projectId!)}
+                          title="Open this project in Project Command"
+                          className={`w-full cursor-pointer rounded border px-2.5 py-1.5 text-left text-xs transition-colors hover:border-primary/50 hover:bg-primary/5 ${toneClass}`}
+                        >
+                          {inner}
+                        </button>
+                      )
+                      : (
+                        <div key={item.id} className={`rounded border px-2.5 py-1.5 text-xs ${toneClass}`}>
+                          {inner}
+                        </div>
+                      )
+                  })}
                 </div>
               )}
             </div>
@@ -252,8 +274,18 @@ export function AgentOSOverviewPanel() {
                 </div>
                 {(status.command.paused.length > 0 || status.command.blocked.length > 0) && (
                   <div className="mt-2 space-y-1">
-                    {status.command.paused.map(project => <div key={`paused-${project.id}`} className="flex items-center justify-between gap-2 text-[11px]"><span className="truncate text-foreground/80">⏸ {project.name}</span><span className="shrink-0 text-muted-foreground/60">{formatTime(project.updatedAt)}</span></div>)}
-                    {status.command.blocked.map(project => <div key={`blocked-${project.id}`} className="flex items-center justify-between gap-2 text-[11px]"><span className="truncate text-foreground/80">⛔ {project.name}</span><span className="shrink-0 text-muted-foreground/60">{formatTime(project.updatedAt)}</span></div>)}
+                    {status.command.paused.map(project => (
+                      <button key={`paused-${project.id}`} type="button" onClick={() => navigateToProject(project.id)} title="Open in Project Command" className="flex w-full cursor-pointer items-center justify-between gap-2 rounded px-1 py-0.5 text-left text-[11px] transition-colors hover:bg-primary/5 hover:text-primary">
+                        <span className="truncate text-foreground/80">⏸ {project.name}</span>
+                        <span className="shrink-0 text-muted-foreground/60">{formatTime(project.updatedAt)}</span>
+                      </button>
+                    ))}
+                    {status.command.blocked.map(project => (
+                      <button key={`blocked-${project.id}`} type="button" onClick={() => navigateToProject(project.id)} title="Open in Project Command" className="flex w-full cursor-pointer items-center justify-between gap-2 rounded px-1 py-0.5 text-left text-[11px] transition-colors hover:bg-primary/5 hover:text-primary">
+                        <span className="truncate text-foreground/80">⛔ {project.name}</span>
+                        <span className="shrink-0 text-muted-foreground/60">{formatTime(project.updatedAt)}</span>
+                      </button>
+                    ))}
                   </div>
                 )}
               </div>
