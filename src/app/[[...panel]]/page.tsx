@@ -20,6 +20,7 @@ import { AgentCommsPanel } from '@/components/panels/agent-comms-panel'
 import { StandupPanel } from '@/components/panels/standup-panel'
 import { OrchestrationBar } from '@/components/panels/orchestration-bar'
 import { AgentOSOverviewPanel } from '@/components/panels/agentos-overview-panel'
+import { AgentOSRunsPanel } from '@/components/panels/agentos-runs-panel'
 import { NotificationsPanel } from '@/components/panels/notifications-panel'
 import { UserManagementPanel } from '@/components/panels/user-management-panel'
 import { AuditTrailPanel } from '@/components/panels/audit-trail-panel'
@@ -521,7 +522,7 @@ export default function Home() {
 }
 
 const ESSENTIAL_PANELS = new Set([
-  'overview', 'agents', 'platoons', 'registry', 'command', 'tasks', 'chat', 'activity', 'logs', 'settings',
+  'overview', 'agents', 'platoons', 'registry', 'command', 'tasks', 'runs', 'chat', 'activity', 'logs', 'settings',
 ])
 
 function ContentRouter({ tab }: { tab: string }) {
@@ -590,6 +591,8 @@ function ContentRouter({ tab }: { tab: string }) {
       return <PlatoonsPanel />
     case 'registry':
       return <AgentRegistryPanel />
+    case 'runs':
+      return <AgentOSRunsPanel />
     case 'command':
       return <ProjectCommandPanel />
     case 'notifications':
