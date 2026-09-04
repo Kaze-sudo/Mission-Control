@@ -14,6 +14,7 @@ import { TaskBoardPanel } from '@/components/panels/task-board-panel'
 import { ActivityFeedPanel } from '@/components/panels/activity-feed-panel'
 import { AgentSquadPanelPhase3 } from '@/components/panels/agent-squad-panel-phase3'
 import { PlatoonsPanel } from '@/components/panels/platoons-panel'
+import { AgentRegistryPanel } from '@/components/panels/agent-registry-panel'
 import { ProjectCommandPanel } from '@/components/panels/project-command-panel'
 import { AgentCommsPanel } from '@/components/panels/agent-comms-panel'
 import { StandupPanel } from '@/components/panels/standup-panel'
@@ -520,7 +521,7 @@ export default function Home() {
 }
 
 const ESSENTIAL_PANELS = new Set([
-  'overview', 'agents', 'platoons', 'tasks', 'chat', 'activity', 'logs', 'settings',
+  'overview', 'agents', 'platoons', 'registry', 'command', 'tasks', 'chat', 'activity', 'logs', 'settings',
 ])
 
 function ContentRouter({ tab }: { tab: string }) {
@@ -587,6 +588,8 @@ function ContentRouter({ tab }: { tab: string }) {
       )
     case 'platoons':
       return <PlatoonsPanel />
+    case 'registry':
+      return <AgentRegistryPanel />
     case 'command':
       return <ProjectCommandPanel />
     case 'notifications':
