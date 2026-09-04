@@ -1,5 +1,9 @@
 import Database from 'better-sqlite3'
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { invalidateGamutEffectiveRuntimeCache } from '@/lib/gamut-host'
 import {
   registerRosterAgents,
   syncAgentRoster,
@@ -150,6 +154,8 @@ function seedSchema(db: InstanceType<typeof Database>): void {
 
 let root = ''
 let workspaceId = 1
+let gamutAppData = ''
+let originalAppData: string | undefined
 
 beforeEach(() => {
   state.db = new Database(':memory:')
@@ -160,11 +166,23 @@ beforeEach(() => {
   state.db.prepare('INSERT INTO projects (id, name, slug, ticket_prefix, workspace_id, status) VALUES (1, ?, ?, ?, 1, ?)').run('Ops', 'agentos-operations', 'OPS', 'active')
   state.db.prepare('INSERT INTO projects (id, name, slug, ticket_prefix, workspace_id, status) VALUES (2, ?, ?, ?, 1, ?)').run('Game', 'dbz-tactics', 'DBZ', 'active')
   state.roster = [tacticalDesigner, gameDirector, enemyAiEngineer, qaLead, offlineHermes]
+  // Hermetic host runtime: gamut classification now consults the live
+  // Superagent settings. Point APPDATA at an empty temp dir (no settings.json)
+  // so host resolution is source 'none' and legacy annotation-only semantics
+  // apply deterministically on any machine.
+  gamutAppData = mkdtempSync(join(tmpdir(), 'mc-roster-sync-'))
+  originalAppData = process.env.APPDATA
+  process.env.APPDATA = gamutAppData
+  invalidateGamutEffectiveRuntimeCache()
 })
 
 afterEach(() => {
   state.db?.close()
   state.db = null
+  rmSync(gamutAppData, { recursive: true, force: true })
+  if (originalAppData === undefined) delete process.env.APPDATA
+  else process.env.APPDATA = originalAppData
+  invalidateGamutEffectiveRuntimeCache()
 })
 
 describe('registration bridge (discovery → live agents rows)', () => {

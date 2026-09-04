@@ -89,6 +89,76 @@ export function invalidateGamutEffectiveRuntimeCache(): void {
   effectiveRuntimeCache = null
 }
 
+/**
+ * Normalized effective runtime identity — the material execution facts that
+ * must be stable across cosmetic metadata but MUST change when what would
+ * actually execute changes (provider/model/runtime drift).
+ *
+ * For Gamut/SuperAgent host runtimes the host-wide settings (settings.json
+ * `llmProvider` / `models.agentModel`) are authoritative: every agent inherits
+ * them, so they decide what a NEW native session would run. When the host is
+ * configured (source 'settings-file') the live values win; otherwise (no
+ * settings file / unreadable — e.g. isolated test envs) we fall back to the
+ * annotated/config values so behavior stays identical to the legacy path.
+ *
+ * This is the single shared resolver used by BOTH plan building and dispatch
+ * authorization, so a plan-time fingerprint and a dispatch-time re-check can
+ * never disagree about which runtime is actually going to execute.
+ */
+export interface EffectiveRuntimeIdentity {
+  provider: string | null
+  model: string | null
+  modelResolved: string | null
+  canonicalModelId: string | null
+  source: 'settings-file' | 'annotation' | 'none'
+}
+
+const HOST_CONFIG_RUNTIMES = new Set(['gamut', 'superagent-host'])
+
+export function resolveEffectiveRuntimeIdentity(input: {
+  runtimeType: string | null
+  annotatedProvider?: string | null
+  annotatedModel?: string | null
+}): EffectiveRuntimeIdentity {
+  const runtime = (input.runtimeType || '').toLowerCase().trim()
+  const annotationProvider = typeof input.annotatedProvider === 'string' && input.annotatedProvider.trim()
+    ? input.annotatedProvider.trim()
+    : null
+  const annotationModel = typeof input.annotatedModel === 'string' && input.annotatedModel.trim()
+    ? input.annotatedModel.trim()
+    : null
+  const hasExplicitAnnotation = Boolean(annotationProvider || annotationModel)
+
+  // An explicit task-level annotation is a manual override and stays
+  // authoritative. Otherwise, for host-config runtimes (Gamut/SuperAgent), the
+  // CURRENT host settings decide what a new session would actually execute —
+  // they win over any snapshot captured in agent-row config at roster-sync
+  // time. When the host is not configured (no settings file / unreadable, e.g.
+  // isolated test envs), we fall back to the annotation values so legacy
+  // behavior is preserved.
+  if (!hasExplicitAnnotation && HOST_CONFIG_RUNTIMES.has(runtime)) {
+    const live = getGamutHostEffectiveRuntime()
+    if (live.source === 'settings-file' && (live.provider || live.model)) {
+      return {
+        provider: live.provider,
+        model: live.model,
+        modelResolved: live.modelResolved,
+        canonicalModelId: live.canonicalModelId,
+        source: 'settings-file',
+      }
+    }
+  }
+  return {
+    provider: annotationProvider,
+    model: annotationModel,
+    modelResolved: resolveGamutModelAlias(annotationModel) ?? annotationModel,
+    canonicalModelId: annotationProvider === 'openrouter' && annotationModel
+      ? (annotationModel.includes('/') ? annotationModel : `anthropic/${resolveGamutModelAlias(annotationModel) ?? annotationModel}`)
+      : null,
+    source: hasExplicitAnnotation ? 'annotation' : 'none',
+  }
+}
+
 export interface GamutHostAgent {
   slug: string
   name?: string

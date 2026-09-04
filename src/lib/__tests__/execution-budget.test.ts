@@ -10,7 +10,7 @@ import {
   refreshOpenRouterPricing,
   clearPricingMemoryCache,
 } from '@/lib/model-pricing'
-import { resolveGamutModelAlias } from '@/lib/gamut-host'
+import { resolveGamutModelAlias, invalidateGamutEffectiveRuntimeCache } from '@/lib/gamut-host'
 import {
   estimateMissionTokenEnvelope,
   estimateMissionCost,
@@ -45,6 +45,20 @@ vi.mock('@/lib/project-task-routing', () => ({
 const workspaceId = 1
 let root = ''
 let cacheFile = ''
+let gamutAppData = ''
+let originalAppData: string | undefined
+
+function isolateGamutHostSettings(llmProvider = 'openrouter', agentModel = 'sonnet'): void {
+  gamutAppData = fs.mkdtempSync(path.join(os.tmpdir(), 'mc-exec-budget-'))
+  fs.mkdirSync(path.join(gamutAppData, 'Superagent'), { recursive: true })
+  fs.writeFileSync(path.join(gamutAppData, 'Superagent', 'settings.json'), JSON.stringify({
+    llmProvider,
+    models: { summarizerModel: 'haiku', agentModel, browserModel: 'sonnet', agentEffort: 'medium' },
+  }))
+  originalAppData = process.env.APPDATA
+  process.env.APPDATA = gamutAppData
+  invalidateGamutEffectiveRuntimeCache()
+}
 
 function seedDb(): void {
   state.db = new Database(':memory:')
@@ -219,6 +233,7 @@ beforeEach(() => {
   root = fs.mkdtempSync(path.join(os.tmpdir(), 'pricing-test-'))
   cacheFile = path.join(root, 'pricing-cache.json')
   clearPricingMemoryCache()
+  isolateGamutHostSettings('openrouter', 'sonnet')
   seedDb()
 })
 
@@ -227,6 +242,10 @@ afterEach(() => {
   state.db = null
   state.activities = []
   fs.rmSync(root, { recursive: true, force: true })
+  fs.rmSync(gamutAppData, { recursive: true, force: true })
+  if (originalAppData === undefined) delete process.env.APPDATA
+  else process.env.APPDATA = originalAppData
+  invalidateGamutEffectiveRuntimeCache()
 })
 
 describe('exact model alias resolution (Phase 1)', () => {

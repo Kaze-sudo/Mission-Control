@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { getDatabase } from './db'
 import { getModelPricing, type ModelPricing } from './model-pricing'
+import { resolveEffectiveRuntimeIdentity } from './gamut-host'
 import { resolveGamutModelAlias } from './gamut-host'
 
 /**
@@ -592,10 +593,21 @@ export function buildExecutionPlan(input: {
     }
 
     const annotation = metadata.agentos_execution && typeof metadata.agentos_execution === 'object' ? metadata.agentos_execution : {}
+    // Effective runtime identity — the shared resolver (same one dispatch
+    // authorization uses). For host-config runtimes (Gamut/SuperAgent) the
+    // CURRENT host settings decide what a new session would actually execute;
+    // an explicit task annotation still wins as a manual override. This is the
+    // single source of truth so plan fingerprints bind to the runtime that
+    // would actually run at dispatch time, not to a stale roster snapshot.
+    const identity = resolveEffectiveRuntimeIdentity({
+      runtimeType: agentRuntime,
+      annotatedProvider: typeof annotation.provider === 'string' ? annotation.provider : null,
+      annotatedModel: typeof annotation.model === 'string' ? annotation.model : null,
+    })
     const classified = classifyExecutionCost({
       runtimeType: agentRuntime,
-      provider: typeof annotation.provider === 'string' ? annotation.provider : null,
-      model: typeof annotation.model === 'string' ? annotation.model : null,
+      provider: identity.provider,
+      model: identity.model,
       costClassOverride: EXECUTION_COST_CLASSES.includes(annotation.costClass) ? annotation.costClass as ExecutionCostClass : null,
       estimatedCost: typeof annotation.estimatedCost === 'number' && Number.isFinite(annotation.estimatedCost) ? annotation.estimatedCost : null,
       agentConfig,

@@ -1,4 +1,8 @@
 import fs from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { invalidateGamutEffectiveRuntimeCache } from '@/lib/gamut-host'
 import Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildCanonicalVault, rmRoot, tmpRoot } from './helpers/ai-arsenal-fixtures'
@@ -41,6 +45,8 @@ vi.mock('@/lib/project-task-routing', () => ({
 }))
 
 let root = ''
+let gamutAppData = ''
+let originalAppData: string | undefined
 const workspaceId = 1
 
 function seedDb(): void {
@@ -156,12 +162,28 @@ beforeEach(() => {
   state.activities = []
   state.routeMock.mockReset()
   state.routeMock.mockReturnValue({ routed: false, reason: 'no bindings', taskId: 0, projectId: null })
+  // Hermetic host runtime: plan building resolves the CURRENT Gamut host
+  // settings for gamut agents — point APPDATA at a temp fixture so plan
+  // assertions never depend on the real machine's Superagent settings.
+  gamutAppData = mkdtempSync(join(tmpdir(), 'mc-exec-auth-'))
+  mkdirSync(join(gamutAppData, 'Superagent'), { recursive: true })
+  writeFileSync(join(gamutAppData, 'Superagent', 'settings.json'), JSON.stringify({
+    llmProvider: 'openrouter',
+    models: { summarizerModel: 'haiku', agentModel: 'sonnet', browserModel: 'sonnet', agentEffort: 'medium' },
+  }))
+  originalAppData = process.env.APPDATA
+  process.env.APPDATA = gamutAppData
+  invalidateGamutEffectiveRuntimeCache()
 })
 
 afterEach(() => {
   state.db?.close()
   state.db = null
   rmRoot(root)
+  rmSync(gamutAppData, { recursive: true, force: true })
+  if (originalAppData === undefined) delete process.env.APPDATA
+  else process.env.APPDATA = originalAppData
+  invalidateGamutEffectiveRuntimeCache()
 })
 
 describe('execution cost classification', () => {

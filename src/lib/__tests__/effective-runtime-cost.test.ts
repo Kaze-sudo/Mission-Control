@@ -249,7 +249,25 @@ describe('cost classification truthfulness', () => {
 })
 
 describe('roster sync propagation (discovery → registration → classification)', () => {
+  let appData = ''
+  const originalAppData = process.env.APPDATA
+
+  function writeHostSettings(llmProvider: string, agentModel: string): void {
+    mkdirSync(join(appData, 'Superagent'), { recursive: true })
+    writeFileSync(join(appData, 'Superagent', 'settings.json'), JSON.stringify({
+      llmProvider,
+      models: { summarizerModel: 'haiku', agentModel, browserModel: 'sonnet', agentEffort: 'medium' },
+    }))
+    invalidateGamutEffectiveRuntimeCache()
+  }
+
   beforeEach(() => {
+    appData = mkdtempSync(join(tmpdir(), 'mc-gamut-roster-'))
+    process.env.APPDATA = appData
+    // The plan builder resolves the CURRENT host runtime (settings.json) for
+    // gamut agents — give it a deterministic openrouter/sonnet host fixture so
+    // plan assertions are hermetic regardless of the real machine's settings.
+    writeHostSettings('openrouter', 'sonnet')
     state.db = new Database(':memory:')
     state.activities = []
     seedSchema(state.db)
@@ -261,6 +279,10 @@ describe('roster sync propagation (discovery → registration → classification
   afterEach(() => {
     state.db?.close()
     state.db = null
+    rmSync(appData, { recursive: true, force: true })
+    if (originalAppData === undefined) delete process.env.APPDATA
+    else process.env.APPDATA = originalAppData
+    invalidateGamutEffectiveRuntimeCache()
   })
 
   it('writes inherited provider/model into registered agent config and classifies truthfully', () => {

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { resolveEffectiveRuntimeIdentity } from './gamut-host'
 import { getDatabase, db_helpers } from './db'
 import type { ProjectRoutingPolicy } from './project-command'
 import {
@@ -651,10 +652,19 @@ export function authorizeAgentOSTaskDispatch(
   }
 
   const annotation = metadata.agentos_execution && typeof metadata.agentos_execution === 'object' ? metadata.agentos_execution : {}
+  // Same shared effective-runtime resolver the plan builder uses: for
+  // host-config runtimes the CURRENT host settings decide what a new session
+  // would actually execute, so dispatch-time authorization sees the same
+  // runtime identity the fingerprint was (or should have been) built against.
+  const identity = resolveEffectiveRuntimeIdentity({
+    runtimeType: agentRuntime,
+    annotatedProvider: typeof annotation.provider === 'string' ? annotation.provider : null,
+    annotatedModel: typeof annotation.model === 'string' ? annotation.model : null,
+  })
   const classified = classifyExecutionCost({
     runtimeType: agentRuntime,
-    provider: typeof annotation.provider === 'string' ? annotation.provider : null,
-    model: typeof annotation.model === 'string' ? annotation.model : null,
+    provider: identity.provider,
+    model: identity.model,
     costClassOverride: typeof annotation.costClass === 'string' ? annotation.costClass as ExecutionCostClass : null,
     estimatedCost: typeof annotation.estimatedCost === 'number' && Number.isFinite(annotation.estimatedCost) ? annotation.estimatedCost : null,
     agentConfig,
