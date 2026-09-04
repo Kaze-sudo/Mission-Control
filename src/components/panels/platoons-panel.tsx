@@ -436,7 +436,7 @@ export function PlatoonsPanel() {
       </section>
 
       <div className="rounded-xl border border-border bg-card/60 p-4 text-sm text-muted-foreground">
-        <span className="font-medium text-foreground">Next layer:</span> capability bids, guarded cross-CLI mission assignment, and project-level team assembly. Gamut will be added after its filesystem configuration is repaired and its runtime contract is inspected.
+        <span className="font-medium text-foreground">Live command layer:</span> discovered Gamut/Hermes/Codex specialists reconcile into the AgentOS roster and bind to projects from Project Command, which also owns capability routing, guarded cross-CLI dispatch, execution authorization, and team assembly. Run <span className="font-mono">Reconcile & Bind Available</span> there after restoring a host.
       </div>
     </div>
   )

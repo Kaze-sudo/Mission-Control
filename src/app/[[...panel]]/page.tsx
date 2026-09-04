@@ -18,6 +18,7 @@ import { ProjectCommandPanel } from '@/components/panels/project-command-panel'
 import { AgentCommsPanel } from '@/components/panels/agent-comms-panel'
 import { StandupPanel } from '@/components/panels/standup-panel'
 import { OrchestrationBar } from '@/components/panels/orchestration-bar'
+import { AgentOSOverviewPanel } from '@/components/panels/agentos-overview-panel'
 import { NotificationsPanel } from '@/components/panels/notifications-panel'
 import { UserManagementPanel } from '@/components/panels/user-management-panel'
 import { AuditTrailPanel } from '@/components/panels/audit-trail-panel'
@@ -563,6 +564,9 @@ function ContentRouter({ tab }: { tab: string }) {
     case 'overview':
       return (
         <>
+          <div className="mt-4 mx-4">
+            <AgentOSOverviewPanel />
+          </div>
           <Dashboard />
           {!isLocal && (
             <div className="mt-4 mx-4 mb-4 rounded-lg border border-border bg-card overflow-hidden">
