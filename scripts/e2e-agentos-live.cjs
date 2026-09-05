@@ -20,6 +20,13 @@
  * a finally block (task delete → objective delete → project delete, then
  * DB-level leftovers sweep for safety). No hardcoded project/task IDs.
  *
+ * Happy path (item 3b) additionally needs a mock executor visible to the
+ * SERVER process. Export these before booting the server:
+ *   HERMES_PROFILES_DIR=<repo>/.tmp/e2e-hermes/profiles
+ *   HERMES_BIN=<repo>/.tmp/e2e-hermes/bin/hermes[.cmd]
+ * The script creates/strips both directories itself, so a fresh checkout
+ * works; if the server was booted without them, item 3b self-skips.
+ *
  * Usage:
  *   node scripts/e2e-agentos-live.cjs [--base http://127.0.0.1:3000]
  *
@@ -29,7 +36,9 @@
 
 const fs = require('node:fs')
 const path = require('node:path')
-const { spawn } = require('node:child_process')
+const { spawn, spawnSync } = require('node:child_process')
+const os = require('node:os')
+const crypto = require('node:crypto')
 
 // ---------------------------------------------------------------------------
 // Config
@@ -45,6 +54,79 @@ const DB_PATH = process.env.MISSION_CONTROL_DATA_DIR
 
 const STAMP = `e2e-${Date.now()}`
 const PROBE_SLUG = `agentos-e2e-${STAMP}`
+
+// Mock executor: a Hermes profile dir makes the agent roster-discoverable
+// (pc:hermes:<name>) without any real Hermes install; HERMES_BIN is what
+// dispatch actually spawns. Both are read from the SERVER's env at runtime —
+// the conventional paths below must be exported by whoever boots the server
+// (see "Mock executor" in the header notes / CI job). .tmp is gitignored.
+const HERMES_PROFILE_NAME = 'e2e-happy'
+const HERMES_ROSTER_ID = `pc:hermes:${HERMES_PROFILE_NAME}`
+const HERMES_STUB_DIR = path.join(PROJECT_ROOT, '.tmp', 'e2e-hermes', 'bin')
+const HERMES_PROFILES_DIR = path.join(PROJECT_ROOT, '.tmp', 'e2e-hermes', 'profiles')
+
+function setupMockExecutor() {
+  fs.mkdirSync(path.join(HERMES_PROFILES_DIR, HERMES_PROFILE_NAME), { recursive: true })
+  fs.mkdirSync(HERMES_STUB_DIR, { recursive: true })
+  // Role text must infer a capability tag (agent-selection) that the mission
+  // intent also infers from the objective title ('test' → testing-review).
+  fs.writeFileSync(path.join(HERMES_PROFILES_DIR, HERMES_PROFILE_NAME, 'SOUL.md'),
+    'ROLE\n- QA test and review specialist for the E2E happy path\n')
+  fs.writeFileSync(path.join(HERMES_PROFILES_DIR, HERMES_PROFILE_NAME, 'profile.yaml'),
+    'description: E2E stub executor for live AgentOS verification\n')
+
+  const done = () => { console.log('      stub executor written to', HERMES_STUB_DIR) }
+  if (process.platform !== 'win32') {
+    const stubPath = path.join(HERMES_STUB_DIR, 'hermes')
+    fs.writeFileSync(stubPath, '#!/bin/sh\nif [ "$1" = "--help" ]; then exit 0; fi\necho "E2E happy path completed successfully by stub executor"\n')
+    fs.chmodSync(stubPath, 0o755)
+    done()
+    return stubPath
+  }
+
+  // Windows: Node >= 20 refuses to spawn .cmd/.bat without shell:true (EINVAL),
+  // and dispatch spawns HERMES_BIN directly. Compile a tiny real exe instead —
+  // csc.exe ships with every Windows install (.NET Framework 4). If unavailable,
+  // fall back to a .cmd stub (works on older Node; dispatch will fail loudly).
+  const exePath = path.join(HERMES_STUB_DIR, 'hermes.exe')
+  const csPath = path.join(HERMES_STUB_DIR, 'hermes.cs')
+  const cscCandidates = [
+    'C:/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe',
+    'C:/Windows/Microsoft.NET/Framework/v4.0.30319/csc.exe',
+  ]
+  const csc = cscCandidates.find(p => fs.existsSync(p))
+  if (csc) {
+    fs.writeFileSync(csPath, [
+      'using System;',
+      'class P {',
+      '  static int Main(string[] a) {',
+      '    foreach (var x in a) if (x == "--help" || x == "-h") return 0;',
+      '    Console.Out.Write("E2E happy path completed successfully by stub executor");',
+      '    return 0;',
+      '  }',
+      '}',
+    ].join('\n'))
+  const compile = spawnSync(csc, ['/nologo', `/out:${exePath}`, '/target:exe', csPath], { stdio: 'pipe' })
+  if (compile.status === 0 && fs.existsSync(exePath)) { done(); return exePath }
+    console.log('      csc compilation failed — falling back to .cmd stub')
+  }
+  const stubPath = path.join(HERMES_STUB_DIR, 'hermes.cmd')
+  fs.writeFileSync(stubPath, '@echo off\necho E2E happy path completed successfully by stub executor\n')
+  done()
+  return stubPath
+}
+
+function teardownMockExecutor() {
+  try { fs.rmSync(path.join(PROJECT_ROOT, '.tmp', 'e2e-hermes'), { recursive: true, force: true }) } catch { /* ignore */ }
+}
+
+function routingProxyName() {
+  // agentosRoutingAgentName(platoonId, name, id): deterministic proxy row name.
+  const platoon = 'hermes'
+  const name = HERMES_PROFILE_NAME
+  const hash = crypto.createHash('sha256').update(HERMES_ROSTER_ID).digest('hex').slice(0, 8)
+  return `agentos:${platoon}:${name}:${hash}`
+}
 
 let failures = 0
 const collectedTaskIds = new Set()
@@ -67,7 +149,7 @@ function section(title) {
 let cookie = ''
 
 async function api(pathname, { method = 'GET', body } = {}) {
-  const res = await fetch(BASE + pathname, {
+  const doFetch = () => fetch(BASE + pathname, {
     method,
     headers: {
       'Content-Type': 'application/json',
@@ -76,6 +158,19 @@ async function api(pathname, { method = 'GET', body } = {}) {
     body: body === undefined ? undefined : JSON.stringify(body),
     redirect: 'manual',
   })
+  // Long server calls (e.g. objective execute) can reset the keep-alive
+  // socket, surfacing as "fetch failed" on the next request — retry transient
+  // network errors instead of aborting the whole E2E.
+  let res
+  for (let attempt = 1; ; attempt++) {
+    try {
+      res = await doFetch()
+      break
+    } catch (err) {
+      if (attempt >= 3) throw err
+      await new Promise(resolve => setTimeout(resolve, 1000))
+    }
+  }
   const setCookie = res.headers.get('set-cookie')
   if (setCookie) cookie = setCookie.split(';')[0]
   const text = await res.text()
@@ -206,7 +301,18 @@ function dbLeftoversSweep({ projectId }) {
 
 async function main() {
   section('0. Setup')
+  const hermesStub = setupMockExecutor()
   await login()
+
+  // Sanity: the mock executor must be roster-discoverable before anything else.
+  // Discovery reads HERMES_PROFILES_DIR in the SERVER process — if the server
+  // was booted without it, this check fails and item 3b self-skips.
+  const rosterRes = await api('/api/agentos/roster')
+  const discovered = rosterRes.json?.discovered || []
+  const rosterAgent = discovered.find(a => a.id === HERMES_ROSTER_ID || a.name === HERMES_PROFILE_NAME)
+  check('mock executor discoverable in roster', !!rosterAgent,
+    rosterAgent ? `found: ${rosterAgent.id} (${rosterAgent.availability})`
+      : `not found among ${discovered.length} discovered — is HERMES_PROFILES_DIR set on the server?`)
 
   // Probe project — created through the API, deleted in cleanup
   const projRes = await api('/api/projects', {
@@ -352,6 +458,102 @@ async function main() {
     }
 
     // ---------------------------------------------------------------------
+    section('3b. Happy path: execute → dispatch → completion (mock executor)')
+    // Bind the roster-discovered stub executor to the probe project, resume,
+    // execute, and let the scheduler carry the mission to completion.
+    const bind = await api(`/api/projects/${projectId}/external-agents`, {
+      method: 'POST', body: { externalAgentId: HERMES_ROSTER_ID, role: 'E2E executor' },
+    })
+    check('mock executor bound to probe project', bind.status === 201 || bind.status === 200,
+      bind.status === 400 ? (bind.json?.error || '').slice(0, 120) : `HTTP ${bind.status}`)
+
+    if (bind.status === 201 || bind.status === 200) {
+
+      // Resume the project — sections 1–3 deliberately exercise the pause
+      // gate, but the happy path needs dispatch to be allowed to proceed.
+      // Execute refuses to flip a *paused* project itself (fail-safe), so an
+      // explicit resume through Project Command is required first.
+      const resume = await api(`/api/projects/${projectId}/agentos-command`, {
+        method: 'PUT', body: { state: 'active' },
+      })
+      check('probe project resumed for happy path', resume.status === 200 && resume.json?.command?.state === 'active',
+        resume.status === 200 ? `state=${resume.json?.command?.state}` : (resume.json?.error || `HTTP ${resume.status}`).slice(0, 120))
+
+      // Fresh objective — the earlier one was cancelled (queued-cancel test),
+      // so its mission task no longer exists and cannot dispatch.
+      const obj2 = await api(`/api/projects/${projectId}/agentos-objectives`, {
+        method: 'POST', body: { title: 'E2E happy path objective', description: 'E2E happy path objective: verify one mocked executor completes this mission and report the result.' },
+      })
+      const objectiveId2 = obj2.json?.objective?.objectiveId ?? obj2.json?.objectiveId ?? null
+      check('happy-path objective created', obj2.status === 201 && !!objectiveId2, `HTTP ${obj2.status}`)
+
+      // Execute the fresh objective: assembles force, activates project
+      const exec2 = await api(`/api/projects/${projectId}/agentos-objectives`, {
+        method: 'PATCH', body: { objectiveId: objectiveId2, action: 'execute' },
+      })
+      check('execute proceeds with bound executor', exec2.status === 200
+        && exec2.json?.executed === true,
+        exec2.json?.executed
+          ? `added=${(exec2.json.added || []).map(a => a.agentName).join(',') || '(pre-bound, nothing to add)'} routes=${(exec2.json.routes || []).length}`
+          : (exec2.json?.reason || `HTTP ${exec2.status}`).slice(0, 120))
+
+      // Approve the fresh plan if policy requires it — section 2's approval
+      // was fingerprint-bound to the first (cancelled) objective's plan, and
+      // the dispatch broker only releases tasks whose plan approval is VALID.
+      const preview2 = await api(`/api/projects/${projectId}/agentos-execution?objective_id=${objectiveId2}`)
+      const plan2 = preview2.json?.plan
+      const refresh2 = await api(`/api/projects/${projectId}/agentos-execution`, {
+        method: 'POST', body: { objectiveId: objectiveId2, action: 'refresh' },
+      })
+      check('happy-path plan persisted', refresh2.status === 200 && !!refresh2.json?.plan
+        && typeof refresh2.json?.rowStatus === 'string',
+        `rowStatus=${refresh2.json?.rowStatus}`)
+      if (plan2?.summary?.approvalRequired) {
+        const approve2 = await api(`/api/projects/${projectId}/agentos-execution`, {
+          method: 'POST', body: { objectiveId: objectiveId2, action: 'approve', approveTaskIds: 'all-eligible' },
+        })
+        check('happy-path plan approved', approve2.status === 200 && approve2.json?.ok === true,
+          approve2.json?.approvalStatus
+            ? `approvalStatus=${approve2.json.approvalStatus}`
+            : (approve2.json?.error || `HTTP ${approve2.status}`).slice(0, 120))
+      }
+
+      // Drive the scheduler until the mission completes or we time out.
+      // task_dispatch = route inbox → broker → dispatch → completion in one tick.
+      let happyRun = null
+      const deadline = Date.now() + 120_000
+      let ticks = 0
+      while (Date.now() < deadline) {
+        ticks++
+        await api('/api/scheduler', { method: 'POST', body: { task_id: 'task_dispatch' } })
+        const runsNow = await api(`/api/agentos/runs?project_id=${projectId}&limit=200`)
+        const runsList = runsNow.json?.runs || []
+        happyRun = runsList.find(r => r.objectiveId === objectiveId2 && r.delegationId)
+          || runsList.find(r => r.objectiveId === objectiveId2 && r.state === 'COMPLETED')
+        if (happyRun && ['COMPLETED', 'REVIEWING', 'FAILED'].includes(happyRun.state)) break
+        await new Promise(resolve => setTimeout(resolve, 2500))
+      }
+      check('mission reached terminal state via scheduler', !!happyRun
+        && ['COMPLETED', 'REVIEWING', 'FAILED'].includes(happyRun.state),
+        happyRun ? `state=${happyRun.state} delegation=${happyRun.delegationId} after ${ticks} tick(s)` : 'no delegation after 120s')
+      // Executor-phase proof: the stub's output was captured into the
+      // delegation result. Final COMPLETED additionally depends on the review
+      // pipeline (out of scope for this probe) — REVIEWING is a healthy stop.
+      check('mock executor output accepted into delegation result',
+        !!happyRun && !!happyRun.delegationId
+        && /stub executor/i.test(String(happyRun.resultSummary || '')),
+        happyRun ? `state=${happyRun.state} result="${String(happyRun.resultSummary || '').slice(0, 80)}"` : 'n/a')
+
+      // Run trail: a dispatched run must carry its delegation identity in the
+      // public feed (registry deep-links and cancel rely on it).
+      const finalRuns = await api(`/api/agentos/runs?project_id=${projectId}&limit=200`)
+      const finalRun = (finalRuns.json?.runs || []).find(r => r.objectiveId === objectiveId2)
+      check('run trail visible in feed with delegation identity', !!finalRun
+        && !!finalRun.delegationId,
+        finalRun ? `state=${finalRun.state} delegation=${finalRun.delegationId}` : 'run not found')
+    }
+
+    // ---------------------------------------------------------------------
     section('4. Live events (SSE bus)')
     // A direct task creation broadcasts `task.created` on the shared event
     // bus; the /api/events SSE stream must deliver it.
@@ -383,6 +585,7 @@ async function main() {
     console.log('\n── cleanup ' + '─'.repeat(50))
     await cleanupArtifact({ projectId })
     dbLeftoversSweep({ projectId })
+    teardownMockExecutor()
     console.log('cleanup done')
   }
 }

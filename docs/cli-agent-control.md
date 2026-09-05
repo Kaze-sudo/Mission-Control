@@ -104,6 +104,30 @@ node scripts/mc-cli.cjs sessions control --id <session-id> --action terminate
 
   Streams SSE events to stdout. In `--json` mode, outputs NDJSON (one JSON object per line). Press Ctrl+C to stop.
 
+  Every event carries `{ type, data, timestamp }`; `data.workspace_id` scopes it to
+  the authenticated workspace (events from other workspaces are never delivered).
+
+  Event types relevant to agent operations:
+
+  | Type | Emitted when | Key `data` fields |
+  |---|---|---|
+  | `task.created` | a task row is inserted, including AgentOS objective missions and knowledge-curation tasks | `id`, `title`, `status`, `project_id`, `workspace_id` |
+  | `task.updated` | task fields change (assignment, dispatch metadata, framework reports) | `id`, `status`, `assigned_to`, `agentos_routing` |
+  | `task.status_changed` | status transition: routing, dispatch claim, mission promotion (backlog → inbox), cancellation | `id`, `status`, `previous_status`, `error_message` |
+  | `task.escalated` | a failed task is re-escalated for attention | `id`, `reason` |
+  | `task.deleted` | the task row is removed | `id` |
+  | `delegation.created` | the scheduler claims a task for an AgentOS specialist | `id`, `task_id`, `project_id`, `objective_id`, `status: 'claimed'`, `attempt` |
+  | `delegation.updated` | a delegation's status changes (running, review, completed, failed, cancelled) | `id`, `task_id`, `status`, `attempt`, `native_session_id`, `completed_at` |
+  | `agent.created` / `agent.updated` / `agent.status_changed` / `agent.deleted` | roster changes | `id`, `name`, `status` |
+  | `run.created` / `run.updated` / `run.completed` / `run.eval_attached` | CLI/session runs | `id`, `status` |
+  | `activity.created` | the activity log receives an entry (pipelines, workflows) | `id`, `action`, `entity_type` |
+  | `chat.message` | chat messages | `session_key`, `role` |
+
+  Panels that render the canonical run feed (Runs, Agent Registry recent
+  executions) refresh instantly on `task.*` / `delegation.*` events through the
+  shared SSE connection — no extra polling needed when an agent drives work via
+  the API.
+
 ### status
 - health (no auth required)
 - overview

@@ -105,7 +105,6 @@ jobs:
       - name: Start server (standalone)
         run: |
           node .next/standalone/server.js &
-          echo "PID=$!" >> $GITHUB_ENV
           for i in $(seq 1 30); do
             code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/ || true)
             if [ "$code" != "000" ]; then echo "server up (HTTP $code)"; break; fi
@@ -118,6 +117,10 @@ jobs:
           AUTH_SECRET: test-legacy-secret
           MC_COOKIE_SECURE: ''
           MC_COOKIE_SAMESITE: lax
+          MC_DISABLE_RUNTIME_SCAN: '1'
+          # Mock executor for the happy-path item (created by the E2E script on disk)
+          HERMES_PROFILES_DIR: ${{ github.workspace }}/.tmp/e2e-hermes/profiles
+          HERMES_BIN: ${{ github.workspace }}/.tmp/e2e-hermes/bin/hermes
 
       - name: Run AgentOS live E2E
         run: node scripts/e2e-agentos-live.cjs --base http://127.0.0.1:3000
