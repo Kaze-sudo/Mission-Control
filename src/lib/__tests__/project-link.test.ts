@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  objectiveCommandHref,
+  parseObjectiveQueryParam,
   parseProjectQueryParam,
   projectCommandHref,
   projectCommandPath,
@@ -15,6 +17,26 @@ describe('projectCommandHref / projectCommandPath', () => {
   it('produces the /command deep-link path with an immutable project id', () => {
     expect(projectCommandPath()).toBe('/command')
     expect(projectCommandHref(8)).toBe('/command?project=8')
+  })
+})
+
+describe('objectiveCommandHref / parseObjectiveQueryParam', () => {
+  it('produces the project + objective deep-link used by Runs → approval', () => {
+    expect(objectiveCommandHref(8, 42)).toBe('/command?project=8&objective=42')
+  })
+
+  it('accepts positive integer objective ids', () => {
+    expect(parseObjectiveQueryParam('42')).toBe(42)
+    expect(parseObjectiveQueryParam(' 7 ')).toBe(7)
+  })
+
+  it('returns null for absent or malformed objective ids', () => {
+    expect(parseObjectiveQueryParam(null)).toBeNull()
+    expect(parseObjectiveQueryParam(undefined)).toBeNull()
+    expect(parseObjectiveQueryParam('')).toBeNull()
+    expect(parseObjectiveQueryParam('objective-name')).toBeNull()
+    expect(parseObjectiveQueryParam('0')).toBeNull()
+    expect(parseObjectiveQueryParam('-1')).toBeNull()
   })
 })
 

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api-client'
-import { parseProjectQueryParam, resolveProjectSelection } from '@/lib/project-link'
+import { parseObjectiveQueryParam, parseProjectQueryParam, resolveProjectSelection } from '@/lib/project-link'
 
 interface Project { id: number; name: string; slug: string }
 interface CommandRecord {
@@ -69,6 +69,8 @@ export function ProjectCommandPanel() {
   const pathname=usePathname()
   const searchParams=useSearchParams()
   const paramApplied=useRef(false)
+  const objectiveParamApplied=useRef<number|null>(null)
+  const execSectionRef=useRef<HTMLElement|null>(null)
   const [projects,setProjects]=useState<Project[]>([])
   const [projectId,setProjectId]=useState<number|null>(null)
   const [projectUrlNotice,setProjectUrlNotice]=useState<string|null>(null)
@@ -136,6 +138,8 @@ export function ProjectCommandPanel() {
     const params=new URLSearchParams(searchParams.toString())
     if(id!==null&&Number.isFinite(id)&&id>0)params.set('project',String(id))
     else params.delete('project')
+    // A manual project switch leaves any ?objective= deep-link context behind.
+    params.delete('objective')
     const query=params.toString()
     router.replace(query?`${pathname}?${query}`:pathname,{scroll:false})
   },[pathname,router,searchParams])
@@ -273,6 +277,22 @@ export function ProjectCommandPanel() {
     }catch(err){setActionError(err instanceof Error?err.message:'Execution action failed')}
     finally{setExecBusy(false)}
   },[loadContext,projectId])
+
+  // Honor ?objective=<id> deep links: after the requested project is selected
+  // and its context has loaded, open that objective's execution preview and
+  // bring the execution section into view. Applies once per objective value;
+  // manual objective changes sync the URL so the plan survives refresh.
+  useEffect(()=>{
+    if(!paramApplied.current)return
+    if(projectId===null)return
+    const requested=parseObjectiveQueryParam(searchParams.get('objective'))
+    if(requested===null){objectiveParamApplied.current=null;return}
+    if(objectiveParamApplied.current===requested)return
+    const fresh=objectiveParamApplied.current===null
+    objectiveParamApplied.current=requested
+    void loadExecutionPreview(requested,false)
+    if(fresh){requestAnimationFrame(()=>execSectionRef.current?.scrollIntoView({behavior:'smooth',block:'start'}))}
+  },[loadExecutionPreview,paramApplied,projectId,searchParams])
 
   const runKnowledgeAction=useCallback(async(payload:{action:'create'|'retry'|'reconcile';packId?:string})=>{
     setCurationBusy(true);setActionError(null);setActionMessage(null)
@@ -511,11 +531,20 @@ export function ProjectCommandPanel() {
             </div>
           </section>
 
-          <section className="rounded-xl border border-border bg-card p-4 space-y-4">
+          <section ref={execSectionRef} className="rounded-xl border border-border bg-card p-4 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div><p className="text-xs font-mono uppercase tracking-wider text-primary">Execution</p><h2 className="text-lg font-semibold mt-1">Preview, cost & authorization</h2><p className="text-xs text-muted-foreground mt-1">Preview exactly what AgentOS intends to run. FREE_LOCAL missions auto-run under policy; PAID/UNKNOWN missions stay safely assigned until you approve the exact plan snapshot.</p></div>
               <div className="flex flex-wrap gap-2">
-                <select value={execObjectiveId??''} onChange={e=>{setExecObjectiveId(e.target.value?Number(e.target.value):null);setExecPlan(null);setExecApproval(null);setExecApprovalStatus('NONE');setExecSelected(new Set())}} className="rounded-md border border-border bg-background px-3 py-2 text-sm"><option value="">Objective…</option>{objectives.map(o=><option key={o.id} value={o.id}>{o.title} (#{o.id})</option>)}</select>
+                <select value={execObjectiveId??''} onChange={e=>{
+                  const value=e.target.value?Number(e.target.value):null
+                  setExecObjectiveId(value);setExecPlan(null);setExecApproval(null);setExecApprovalStatus('NONE');setExecSelected(new Set())
+                  // Keep the URL in sync so the selected objective survives refresh/bookmark.
+                  const params=new URLSearchParams(searchParams.toString())
+                  if(value!==null&&Number.isFinite(value)&&value>0)params.set('objective',String(value))
+                  else params.delete('objective')
+                  const query=params.toString()
+                  router.replace(query?`${pathname}?${query}`:pathname,{scroll:false})
+                }} className="rounded-md border border-border bg-background px-3 py-2 text-sm"><option value="">Objective…</option>{objectives.map(o=><option key={o.id} value={o.id}>{o.title} (#{o.id})</option>)}</select>
                 <Button size="sm" variant="outline" disabled={execBusy||!execObjectiveId} onClick={()=>void runExecAction('preview',execObjectiveId!)}>{execBusy?'Working…':'Generate Preview'}</Button>
                 <Button size="sm" variant="outline" disabled={execBusy||!execObjectiveId||!execPlan} onClick={()=>void runExecAction('refresh',execObjectiveId!)}>Refresh Plan</Button>
                 {execPlan&&execPlan.summary.approvalRequired&&<>

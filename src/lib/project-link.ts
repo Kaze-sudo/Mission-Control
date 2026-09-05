@@ -24,6 +24,29 @@ export function projectCommandHref(projectId: number): string {
 }
 
 /**
+ * Build the deep-link href for a project's Project Command view with the
+ * execution preview already opened for one objective
+ * (`/command?project=<id>&objective=<id>`). Runs and other surfaces use this
+ * to jump straight from a run row to the plan/approval UI for its mission.
+ */
+export function objectiveCommandHref(projectId: number, objectiveId: number): string {
+  return `${projectCommandPath()}?project=${encodeURIComponent(String(projectId))}&objective=${encodeURIComponent(String(objectiveId))}`
+}
+
+/**
+ * Parse a raw `?objective=` query value into an objective id. Returns a
+ * positive integer, or null when absent, malformed, or not a positive safe
+ * integer.
+ */
+export function parseObjectiveQueryParam(raw: string | null | undefined): number | null {
+  if (raw === null || raw === undefined) return null
+  const trimmed = String(raw).trim()
+  if (!/^\d+$/.test(trimmed)) return null
+  const value = Number(trimmed)
+  return Number.isSafeInteger(value) && value > 0 ? value : null
+}
+
+/**
  * Parse a raw `?project=` query value into a project id. Returns a positive
  * integer, or null when the value is absent, malformed, or not a positive
  * safe integer. Project ids are never inferred from names.
