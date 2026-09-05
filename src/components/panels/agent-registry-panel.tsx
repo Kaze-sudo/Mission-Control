@@ -2,9 +2,12 @@
 
 import { useCallback, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { apiFetch } from '@/lib/api-client'
+import { ApiError, apiFetch } from '@/lib/api-client'
 import { useNavigateToPanel, useNavigateToProjectCommand } from '@/lib/navigation'
 import { useSmartPoll } from '@/lib/use-smart-poll'
+import { useRunEventPulse } from '@/lib/use-run-events'
+
+const ACTIVE_CANCELLABLE = new Set(['QUEUED', 'HELD', 'WAITING', 'RUNNING'])
 
 /**
  * Agent Registry — the operational inventory of real AgentOS specialists.
@@ -46,6 +49,8 @@ interface RegistryAgent {
   lastSeen: number | null
   recentRuns: Array<{
     id: string
+    delegationId: string | null
+    objectiveId: number | null
     taskId: number
     taskTitle: string
     projectId: number | null
@@ -56,6 +61,7 @@ interface RegistryAgent {
     delegationStatus: string | null
     taskStatus: string
     errorMessage: string | null
+    holdReason: string | null
     createdAt: number | null
     updatedAt: number | null
     completedAt: number | null
@@ -143,6 +149,8 @@ export function AgentRegistryPanel() {
   const [ecosystemFilter, setEcosystemFilter] = useState('all')
   const [availabilityFilter, setAvailabilityFilter] = useState('all')
   const [dispatchableOnly, setDispatchableOnly] = useState(false)
+  const [cancelBusy, setCancelBusy] = useState<string | null>(null)
+  const [runNotice, setRunNotice] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -157,6 +165,32 @@ export function AgentRegistryPanel() {
   }, [])
 
   useSmartPoll(refresh, 60_000)
+  useRunEventPulse(refresh)
+
+  const cancelRun = useCallback(async (run: RegistryAgent['recentRuns'][number]) => {
+    if (!run.delegationId) return
+    if (!window.confirm(`Cancel this ${run.state.toLowerCase()} run for task #${run.taskId} on ${run.taskTitle}?`)) return
+    setCancelBusy(run.id)
+    setRunNotice(null)
+    try {
+      const data = await apiFetch<{ ok?: boolean; cancelled?: boolean; scope?: string; reason?: string; error?: string }>(
+        '/api/agentos/runs',
+        { method: 'POST', body: JSON.stringify({ action: 'cancel', delegationId: run.delegationId }) },
+      )
+      if (data.ok && data.cancelled) {
+        setRunNotice(`Cancelled ${run.state.toLowerCase()} run for task #${run.taskId} (${data.scope === 'active' ? 'host session terminated' : 'stopped before dispatch'}).`)
+      } else {
+        setRunNotice(data.reason || data.error || 'Cancellation was not applied')
+      }
+      void refresh()
+    } catch (err) {
+      const payload = err instanceof ApiError ? err.payload : null
+      const reason = payload && typeof payload === 'object' && 'reason' in payload ? String((payload as { reason: unknown }).reason) : null
+      setRunNotice(reason || (err instanceof Error ? err.message : 'Cancellation failed'))
+    } finally {
+      setCancelBusy(null)
+    }
+  }, [refresh])
 
   const toggleExpanded = useCallback((id: string) => {
     setExpanded(prev => {
@@ -217,6 +251,7 @@ export function AgentRegistryPanel() {
       </div>
 
       {error && <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</div>}
+      {runNotice && <div className={`rounded-lg border px-4 py-3 text-sm ${runNotice.startsWith('Cancelled') ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400' : 'border-amber-500/30 bg-amber-500/10 text-amber-300'}`}>{runNotice}</div>}
 
       {/* Totals */}
       <div className="grid gap-2.5 grid-cols-2 sm:grid-cols-3 lg:grid-cols-6">
@@ -424,8 +459,30 @@ export function AgentRegistryPanel() {
                                   {run.ecosystem && <span className="text-[10px] text-muted-foreground">{run.ecosystem}</span>}
                                   <span className="text-[10px] text-muted-foreground">{fmtDuration(run.durationSeconds)}</span>
                                   <span className="text-[10px] text-muted-foreground">{formatTime(run.updatedAt)}</span>
+                                  {run.objectiveId !== null && run.objectiveId !== undefined && run.projectId !== null && run.projectId !== undefined && (
+                                    <button
+                                      type="button"
+                                      onClick={() => navigateToProject(run.projectId!, run.objectiveId!)}
+                                      className="cursor-pointer text-[10px] text-primary underline-offset-2 hover:underline"
+                                    >
+                                      plan / approval
+                                    </button>
+                                  )}
+                                  {ACTIVE_CANCELLABLE.has(run.state) && run.delegationId && (
+                                    <button
+                                      type="button"
+                                      disabled={cancelBusy === run.id}
+                                      onClick={() => void cancelRun(run)}
+                                      className="cursor-pointer rounded border border-border/50 px-1.5 py-0.5 text-[10px] text-amber-300 hover:bg-amber-500/10 disabled:opacity-50"
+                                    >
+                                      {cancelBusy === run.id ? 'Cancelling…' : 'Cancel'}
+                                    </button>
+                                  )}
                                   {run.state === 'FAILED' && run.errorMessage && (
                                     <span className="w-full truncate text-[10px] text-rose-400/90" title={run.errorMessage}>{run.errorMessage}</span>
+                                  )}
+                                  {run.holdReason && (
+                                    <span className="w-full truncate text-[10px] text-amber-300/80" title={run.holdReason}>{run.holdReason}</span>
                                   )}
                                 </div>
                               ))}

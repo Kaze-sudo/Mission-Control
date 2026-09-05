@@ -93,6 +93,13 @@ export function useServerEvents() {
     }
 
     function dispatch(event: ServerEvent) {
+      // Panels that render the canonical AgentOS run feed (Runs, Agent
+      // Registry recent executions) subscribe to these via a window event so
+      // they refresh instantly instead of waiting for their poll interval.
+      if (event.type === 'delegation.created' || event.type === 'delegation.updated'
+        || event.type === 'task.created' || event.type === 'task.updated' || event.type === 'task.status_changed') {
+        window.dispatchEvent(new CustomEvent('mc:run-events', { detail: event }))
+      }
       switch (event.type) {
         case 'connected':
           // Initial connection ack, nothing to do

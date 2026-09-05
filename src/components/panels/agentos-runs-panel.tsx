@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { ApiError, apiFetch } from '@/lib/api-client'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 import { useNavigateToProjectCommand } from '@/lib/navigation'
+import { useRunEventPulse } from '@/lib/use-run-events'
 import { useMissionControl } from '@/store'
 
 type RunState =
@@ -38,6 +39,7 @@ interface AgentOSRun {
   updatedAt: number | null
   completedAt: number | null
   durationSeconds: number | null
+  holdReason: string | null
 }
 
 interface RunsResponse {
@@ -134,6 +136,7 @@ export function AgentOSRunsPanel() {
 
   const hasActive = useMemo(() => runs.some(run => ACTIVE_STATES.has(run.state)), [runs])
   useSmartPoll(load, hasActive ? 5_000 : 30_000)
+  useRunEventPulse(load)
 
   const loadProjects = useCallback(async () => {
     try {
@@ -368,6 +371,9 @@ export function AgentOSRunsPanel() {
                     {run.state === 'FAILED' && run.errorMessage && (
                       <div className="line-clamp-1 text-xs text-rose-400/90">{run.errorClass ? `[${ERROR_CLASS_LABELS[run.errorClass] || run.errorClass}] ` : ''}{run.errorMessage}</div>
                     )}
+                    {run.holdReason && (
+                      <div className="line-clamp-1 text-xs text-amber-300/80">{run.holdReason}</div>
+                    )}
                   </button>
 
                   {isOpen && (
@@ -389,6 +395,7 @@ export function AgentOSRunsPanel() {
                         <Field label="Created" value={fmtEpoch(run.createdAt)} />
                         <Field label="Updated" value={fmtEpoch(run.updatedAt)} />
                         <Field label="Completed" value={fmtEpoch(run.completedAt)} />
+                        {run.holdReason && <div className="sm:col-span-2 xl:col-span-3"><Field label="Why held / queued" value={run.holdReason} /></div>}
                       </div>
 
                       {run.projectId !== null && (

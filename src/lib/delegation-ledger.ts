@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { getDatabase, db_helpers } from './db'
 import { releaseReservationForTask } from './execution-authorization'
+import { eventBus } from './event-bus'
 
 export type AgentOSDelegationStatus =
   | 'claimed'
@@ -100,6 +101,14 @@ export function createDelegationForTask(input: {
     db.prepare(
       'UPDATE tasks SET metadata = ?, updated_at = ? WHERE id = ? AND workspace_id = ?',
     ).run(JSON.stringify(nextMetadata), now, input.taskId, input.workspaceId)
+    eventBus.broadcast('delegation.updated', {
+      workspace_id: input.workspaceId,
+      id: existing.id,
+      task_id: input.taskId,
+      status: 'claimed',
+      attempt: Math.max(existing.attempt + 1, input.attempt || 1),
+      updated_at: now,
+    })
     return getDelegation(existing.id, input.workspaceId)!
   }
 
@@ -146,6 +155,18 @@ export function createDelegationForTask(input: {
     },
     input.workspaceId,
   )
+  eventBus.broadcast('delegation.created', {
+    workspace_id: input.workspaceId,
+    id,
+    task_id: input.taskId,
+    project_id: input.projectId ?? null,
+    objective_id: typeof objective.objectiveId === 'number' ? objective.objectiveId : null,
+    platoon_id: typeof routing.platoonId === 'string' ? routing.platoonId : input.runtimeType || null,
+    routing_agent_name: input.routingAgentName,
+    status: 'claimed',
+    attempt: Math.max(1, input.attempt || 1),
+    created_at: now,
+  })
 
   return getDelegation(id, input.workspaceId)!
 }
@@ -213,6 +234,20 @@ export function updateDelegation(
       // release must never break delegation updates
     }
   }
+
+  eventBus.broadcast('delegation.updated', {
+    workspace_id: workspaceId,
+    id,
+    task_id: current.taskId,
+    project_id: current.projectId ?? null,
+    objective_id: current.objectiveId ?? null,
+    status,
+    attempt: current.attempt,
+    native_session_id: patch.nativeSessionId !== undefined ? patch.nativeSessionId : current.nativeSessionId,
+    native_run_id: patch.nativeRunId !== undefined ? patch.nativeRunId : current.nativeRunId,
+    updated_at: now,
+    completed_at: completedAt,
+  })
 
   return getDelegation(id, workspaceId)
 }

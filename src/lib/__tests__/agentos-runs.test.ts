@@ -7,6 +7,7 @@ import {
   listAgentOSRuns,
   listRecentRunsForAgent,
   retryAgentOSRun,
+  runHoldReason,
 } from '@/lib/agentos-runs'
 
 const state = vi.hoisted(() => ({
@@ -78,6 +79,31 @@ function seedSchema(db: InstanceType<typeof Database>): void {
       created_at INTEGER NOT NULL DEFAULT (unixepoch()),
       updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
       completed_at INTEGER
+    );
+    CREATE TABLE agentos_execution_plans (
+      objective_id INTEGER PRIMARY KEY,
+      project_id INTEGER NOT NULL,
+      workspace_id INTEGER NOT NULL,
+      status TEXT NOT NULL DEFAULT 'PREVIEW',
+      plan_json TEXT NOT NULL DEFAULT '{}',
+      fingerprint TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE TABLE agentos_execution_approvals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      approval_id TEXT NOT NULL UNIQUE,
+      objective_id INTEGER NOT NULL,
+      project_id INTEGER NOT NULL,
+      workspace_id INTEGER NOT NULL,
+      approved_by TEXT NOT NULL,
+      approved_at INTEGER NOT NULL,
+      approved_task_ids_json TEXT NOT NULL DEFAULT '[]',
+      excluded_task_ids_json TEXT NOT NULL DEFAULT '[]',
+      fingerprint TEXT NOT NULL,
+      max_authorized_amount REAL,
+      expires_at INTEGER,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
     );
   `)
 }
@@ -492,6 +518,71 @@ describe('cancelAgentOSRun', () => {
     expect(result.scope).toBe('active')
     const delegation = db.prepare('SELECT status FROM agentos_delegations WHERE id = ?').get('del-405') as { status: string }
     expect(delegation.status).toBe('cancelled')
+  })
+})
+
+describe('runHoldReason', () => {
+  const base = {
+    workspaceId: 1, projectId: 1, objectiveId: 10,
+    taskStatus: 'assigned', delegationStatus: null, errorMessage: null,
+  }
+
+  it('returns null for running, terminal, and completed states', () => {
+    expect(runHoldReason({ ...base, state: 'RUNNING' })).toBeNull()
+    expect(runHoldReason({ ...base, state: 'REVIEWING' })).toBeNull()
+    expect(runHoldReason({ ...base, state: 'COMPLETED' })).toBeNull()
+    expect(runHoldReason({ ...base, state: 'CANCELLED' })).toBeNull()
+  })
+
+  it('explains a paused project', () => {
+    const reason = runHoldReason({ ...base, state: 'QUEUED' }, { commandStateOf: () => 'paused' })
+    expect(reason).toContain('paused')
+  })
+
+  it('explains a command-policy concurrency hold', () => {
+    const reason = runHoldReason({ ...base, state: 'HELD', taskStatus: 'awaiting_owner' })
+    expect(reason).toContain('concurrency')
+  })
+
+  it('flags awaiting cost approval when the stored plan requires it and none exists', () => {
+    const reason = runHoldReason(
+      { ...base, state: 'HELD' },
+      { planApprovalOf: () => ({ approvalRequired: true, hasApproval: false }) },
+    )
+    expect(reason).toContain('Awaiting cost approval')
+  })
+
+  it('flags a possibly-stale approval when an approval exists but the run is still held', () => {
+    const reason = runHoldReason(
+      { ...base, state: 'HELD' },
+      { planApprovalOf: () => ({ approvalRequired: true, hasApproval: true }) },
+    )
+    expect(reason).toContain('stale')
+  })
+
+  it('classifies a failed provider balance as an HTTP 402 hold/failure', () => {
+    const reason = runHoldReason({ ...base, state: 'FAILED', errorMessage: 'API Error: 402 insufficient balance' })
+    expect(reason).toContain('402')
+  })
+
+  it('explains plain queued work as waiting for the next scheduler tick', () => {
+    const reason = runHoldReason({ ...base, state: 'QUEUED' })
+    expect(reason).toContain('Queued for dispatch')
+  })
+})
+
+describe('listAgentOSRuns hold-reason integration', () => {
+  it('attaches approval holds from stored plan rows', () => {
+    const db = state.db!
+    insertObjective(db, 10, 1, 'Held objective')
+    db.prepare('INSERT INTO agentos_execution_plans (objective_id, project_id, workspace_id, status, plan_json) VALUES (?, 1, 1, ?, ?)')
+      .run(10, 'AWAITING_APPROVAL', JSON.stringify({ summary: { approvalRequired: true } }))
+    insertTask(db, { id: 410, title: 'Held mission', status: 'assigned', projectId: 1, metadata: missionMetadata(10), updatedAt: 6000 })
+
+    const { runs } = listAgentOSRuns({ workspaceId: 1, states: ['QUEUED'] })
+    const run = runs.find(r => r.id === 'task:410')
+    expect(run).toBeDefined()
+    expect(run!.holdReason).toContain('Awaiting cost approval')
   })
 })
 

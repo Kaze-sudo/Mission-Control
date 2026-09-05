@@ -84,6 +84,8 @@ export interface AgentOSRun {
   completedAt: number | null
   /** Seconds between delegation creation (claim) and completion, when terminal. */
   durationSeconds: number | null
+  /** Why a non-running, non-terminal run is not executing (real-state derived). */
+  holdReason: string | null
 }
 
 export interface AgentOSRunSummary {
@@ -212,6 +214,7 @@ function toDelegationRun(
     updatedAt: row.updated_at ?? createdAt,
     completedAt,
     durationSeconds: durationSeconds(createdAt, completedAt),
+    holdReason: null,
   }
 }
 
@@ -254,6 +257,7 @@ function toQueuedTaskRun(
     updatedAt: timestamps.updatedAt ?? timestamps.createdAt,
     completedAt: null,
     durationSeconds: null,
+    holdReason: null,
   }
 }
 
@@ -406,6 +410,20 @@ export function listAgentOSRuns(input: {
   // Newest activity first across both delegation runs and queued missions.
   runs.sort((a, b) => (b.updatedAt ?? b.createdAt ?? 0) - (a.updatedAt ?? a.createdAt ?? 0))
 
+  // Attach real-state hold reasons (why each non-running run is not executing).
+  const holdContext = buildRunHoldContext(workspaceId, runs)
+  for (const run of runs) {
+    run.holdReason = runHoldReason({
+      state: run.state,
+      workspaceId,
+      projectId: run.projectId,
+      objectiveId: run.objectiveId,
+      taskStatus: run.taskStatus,
+      delegationStatus: run.delegationStatus,
+      errorMessage: run.errorMessage,
+    }, holdContext)
+  }
+
   let filtered = runs
   if (input.states && input.states.length > 0) {
     const wanted = new Set(input.states)
@@ -423,6 +441,140 @@ export function listAgentOSRuns(input: {
 /** True when the project command state blocks new AgentOS work. */
 export function commandStateBlocksDispatch(state: string | null | undefined): boolean {
   return state === 'paused' || state === 'blocked'
+}
+
+export interface RunHoldContext {
+  /** Precomputed project command state lookup (avoids per-run DB reads). */
+  commandStateOf?: (projectId: number) => string | null
+  /** Precomputed stored-plan approval lookup per objective. */
+  planApprovalOf?: (objectiveId: number) => { approvalRequired: boolean; hasApproval: boolean } | null
+}
+
+/**
+ * Why is this run not executing right now? Derived from real state only:
+ * project command state, the delegation/task ledger, and the stored execution
+ * plan + approval rows — never frontend assumptions. Returns null for
+ * states that need no explanation (running, reviewing, completed, cancelled)
+ * and for plain queued work that is simply waiting for the next tick.
+ */
+export function runHoldReason(run: {
+  state: AgentOSRunDisplayState
+  workspaceId: number
+  projectId: number | null
+  objectiveId: number | null
+  taskStatus: string | null | undefined
+  delegationStatus: string | null | undefined
+  errorMessage: string | null | undefined
+}, context: RunHoldContext = {}): string | null {
+  if (run.state === 'RUNNING' || run.state === 'REVIEWING' || run.state === 'RETRYING'
+    || run.state === 'COMPLETED' || run.state === 'CANCELLED') {
+    return null
+  }
+  if (run.state === 'FAILED') {
+    switch (classifyRunError(run.errorMessage)) {
+      case 'insufficient_balance': return 'Insufficient provider balance (HTTP 402) — the provider blocked this execution'
+      case 'authentication': return 'Provider authentication failure'
+      case 'timeout': return 'Execution timed out'
+      case 'host_connection': return 'Host connection failure'
+      case 'model_unavailable': return 'Model unavailable'
+      case 'dispatch_rejected': return 'Dispatch rejected — no eligible candidate at dispatch time'
+      default: return null
+    }
+  }
+
+  const db = getDatabase()
+  const reasons: string[] = []
+
+  if (run.projectId !== null) {
+    const state = context.commandStateOf
+      ? context.commandStateOf(run.projectId)
+      : (() => { try { return getProjectCommand(run.projectId!, run.workspaceId).state } catch { return null } })()
+    if (state === 'paused') reasons.push('Project is paused — resume it in Project Command to allow dispatch')
+    else if (state === 'blocked') reasons.push('Project is blocked — resolve activation blockers in Project Command')
+    else if (state === 'draft' || state === 'ready') reasons.push(`Project command state is ${state} — activate the project to allow dispatch`)
+  }
+
+  if (run.taskStatus === 'awaiting_owner') {
+    reasons.push('Held by command policy — waiting behind concurrency / platoon limits')
+  }
+
+  if (run.objectiveId !== null) {
+    let planInfo = context.planApprovalOf ? context.planApprovalOf(run.objectiveId) : null
+    if (planInfo === undefined) planInfo = null
+    if (planInfo === null) {
+      try {
+        const planRow = db.prepare(
+          'SELECT status, plan_json FROM agentos_execution_plans WHERE objective_id = ? AND workspace_id = ?',
+        ).get(run.objectiveId, run.workspaceId) as { status: string; plan_json: string } | undefined
+        if (planRow) {
+          let approvalRequired = planRow.status === 'AWAITING_APPROVAL' || planRow.status === 'PREVIEW'
+          if (!approvalRequired) {
+            try {
+              approvalRequired = (JSON.parse(planRow.plan_json) as { summary?: { approvalRequired?: boolean } })?.summary?.approvalRequired === true
+            } catch { /* unparseable plan_json */ }
+          }
+          const hasApproval = !!db.prepare(
+            'SELECT id FROM agentos_execution_approvals WHERE objective_id = ? AND workspace_id = ? ORDER BY created_at DESC, id DESC LIMIT 1',
+          ).get(run.objectiveId, run.workspaceId)
+          planInfo = { approvalRequired, hasApproval }
+        }
+      } catch {
+        // Plan/approval tables absent in this environment — skip approval reasoning.
+      }
+    }
+    if (planInfo?.approvalRequired) {
+      reasons.push(planInfo.hasApproval
+        ? 'Cost approval exists but the run is still held — the plan may be stale; refresh and re-approve in Project Command'
+        : 'Awaiting cost approval — approve the exact execution plan in Project Command')
+    }
+  }
+
+  if (reasons.length === 0 && (run.taskStatus === 'assigned' || run.taskStatus === 'inbox')) {
+    reasons.push('Queued for dispatch — the next scheduler tick claims approved work')
+  }
+  return reasons.length > 0 ? reasons.join(' · ') : null
+}
+
+/** Build per-project command state + per-objective plan/approval lookups once. */
+function buildRunHoldContext(workspaceId: number, runs: AgentOSRun[]): RunHoldContext {
+  const commandStates = new Map<number, string>()
+  try {
+    const rows = getDatabase().prepare(
+      'SELECT project_id, state FROM agentos_project_command WHERE workspace_id = ?',
+    ).all(workspaceId) as Array<{ project_id: number; state: string }>
+    for (const row of rows) commandStates.set(row.project_id, row.state)
+  } catch { /* command table absent */ }
+
+  const objectiveIds = [...new Set(runs.map(r => r.objectiveId).filter((id): id is number => id !== null))]
+  const planInfo = new Map<number, { approvalRequired: boolean; hasApproval: boolean }>()
+  if (objectiveIds.length > 0) {
+    try {
+      const placeholders = objectiveIds.map(() => '?').join(',')
+      const planRows = getDatabase().prepare(
+        `SELECT objective_id, status, plan_json FROM agentos_execution_plans WHERE workspace_id = ? AND objective_id IN (${placeholders})`,
+      ).all(workspaceId, ...objectiveIds) as Array<{ objective_id: number; status: string; plan_json: string }>
+      const approvalIds = new Set(
+        (getDatabase().prepare(
+          `SELECT objective_id FROM agentos_execution_approvals WHERE workspace_id = ? AND objective_id IN (${placeholders})
+           GROUP BY objective_id HAVING MAX(created_at)`,
+        ).all(workspaceId, ...objectiveIds) as Array<{ objective_id: number }>).map(r => r.objective_id),
+      )
+      for (const row of planRows) {
+        let approvalRequired = row.status === 'AWAITING_APPROVAL' || row.status === 'PREVIEW'
+        if (!approvalRequired) {
+          try {
+            approvalRequired = (JSON.parse(row.plan_json) as { summary?: { approvalRequired?: boolean } })?.summary?.approvalRequired === true
+          } catch { /* unparseable */ }
+        }
+        planInfo.set(row.objective_id, { approvalRequired, hasApproval: approvalIds.has(row.objective_id) })
+      }
+    } catch { /* plan tables absent */ }
+  }
+
+  return {
+    commandStateOf: (projectId) => commandStates.get(projectId) ?? null,
+    planApprovalOf: (objectiveId) => planInfo.get(objectiveId) ?? null,
+  }
 }
 
 /**
@@ -775,7 +927,7 @@ export function listRecentRunsForAgent(input: {
     LIMIT ?
   `).all(input.workspaceId, input.agentName, input.agentName, limit) as any[]
 
-  return rows.map((row) => {
+  const runs = rows.map((row) => {
     const task: RunTaskRow | undefined = {
       id: row.task_id,
       title: row.task_title ?? `Task ${row.task_id}`,
@@ -790,6 +942,20 @@ export function listRecentRunsForAgent(input: {
       : undefined
     return toDelegationRun(row, task, row.project_name ?? null, objective)
   })
+
+  const holdContext = buildRunHoldContext(input.workspaceId, runs)
+  for (const run of runs) {
+    run.holdReason = runHoldReason({
+      state: run.state,
+      workspaceId: input.workspaceId,
+      projectId: run.projectId,
+      objectiveId: run.objectiveId,
+      taskStatus: run.taskStatus,
+      delegationStatus: run.delegationStatus,
+      errorMessage: run.errorMessage,
+    }, holdContext)
+  }
+  return runs
 }
 
 /** Re-exported for callers that type against the ledger directly. */
