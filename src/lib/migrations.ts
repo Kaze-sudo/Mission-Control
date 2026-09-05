@@ -1867,6 +1867,15 @@ const migrations: Migration[] = [
           ON agentos_execution_costs(objective_id, workspace_id, kind, created_at);
       `)
     }
+  },
+  {
+    id: '067_users_auth_source',
+    up: (db) => {
+      const cols = db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>
+      if (!cols.some(c => c.name === 'auth_source')) {
+        db.exec("ALTER TABLE users ADD COLUMN auth_source TEXT")
+      }
+    },
   }
 ]
 
