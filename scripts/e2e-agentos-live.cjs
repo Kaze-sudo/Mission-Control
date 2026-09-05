@@ -23,8 +23,8 @@
  * Usage:
  *   node scripts/e2e-agentos-live.cjs [--base http://127.0.0.1:3000]
  *
- * Auth: uses AUTH_USER + AUTH_PASS_B64 (or AUTH_PASS) from .env, matching
- * the seeded admin credentials.
+ * Auth: uses AUTH_USER + AUTH_PASS_B64/AUTH_PASS — process env first (CI),
+ * then .env — matching the seeded admin credentials.
  */
 
 const fs = require('node:fs')
@@ -89,13 +89,18 @@ async function api(pathname, { method = 'GET', body } = {}) {
 // ---------------------------------------------------------------------------
 
 function loadEnv() {
+  // Process env wins (CI); .env supplies local defaults.
   const envPath = path.join(PROJECT_ROOT, '.env')
-  if (!fs.existsSync(envPath)) return {}
+  const out = {
+    AUTH_USER: process.env.AUTH_USER || '',
+    AUTH_PASS: process.env.AUTH_PASS || '',
+    AUTH_PASS_B64: process.env.AUTH_PASS_B64 || '',
+  }
+  if (!fs.existsSync(envPath)) return out
   const raw = fs.readFileSync(envPath, 'utf8').replace(/^\uFEFF/, '')
-  const out = {}
   for (const line of raw.split(/\r?\n/)) {
     const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/)
-    if (m) out[m[1]] = m[2]
+    if (m && out[m[1]] === '') out[m[1]] = m[2]
   }
   return out
 }
