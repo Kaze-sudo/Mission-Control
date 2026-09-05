@@ -21,15 +21,24 @@
  * bucket. A run is never reported completed from a dispatch accept; it must
  * reach the terminal statuses the executor/reconciler actually wrote.
  *
- * Retry (`retryAgentOSRun`) is the only mutation here and it intentionally
- * lives at this service boundary, not in React: it re-enters a terminal
- * FAILED run through current project routing (fresh specialist selection) and
- * the existing dispatch-time authorization gate re-runs before anything can
- * execute. It never bypasses project pause state.
+ * Mutations live at this service boundary, not in React:
+ *
+ *   - `retryAgentOSRun` re-enters a terminal FAILED run through current
+ *     project routing (fresh specialist selection) and the existing
+ *     dispatch-time authorization gate re-runs before anything can execute.
+ *     It never bypasses project pause state.
+ *
+ *   - `cancelAgentOSRun` cancels queued work as a pure DB transition, and
+ *     cancels active Gamut runs by terminating the live host session first —
+ *     other executors are refused truthfully when they lack a supported
+ *     termination path.
  */
 import { getDatabase, db_helpers } from './db'
 import { getProjectCommand } from './project-command'
 import { routeTaskWithinProject } from './project-task-routing'
+import { releaseReservationForTask } from './execution-authorization'
+import { terminateGamutSession } from './gamut-host'
+import { getDelegation, getLatestDelegationForTask, updateDelegation } from './delegation-ledger'
 import type { AgentOSDelegation } from './delegation-ledger'
 
 /** Presentation buckets derived from real task/delegation status pairs. */
@@ -555,6 +564,185 @@ export function retryAgentOSRun(input: {
     taskId,
     delegationId: delegationId ?? latestDelegation?.id ?? null,
   }
+}
+
+/**
+ * Operator cancel of an AgentOS run. Two distinct, truthful scopes:
+ *
+ *   queued — the task has not been claimed yet (no delegation row). Cancelling
+ *     is a pure DB transition on the task row; the dispatcher only claims
+ *     `assigned` tasks, so a cancelled task can never start. This works for
+ *     every ecosystem.
+ *
+ *   active — a delegation exists and may be executing in the native runtime.
+ *     Only Gamut supports host-side termination today (DELETE session on the
+ *     live host API). For other executors there is no supported termination
+ *     path, so active cancellation is refused with the reason rather than
+ *     faked. A delegation that has been claimed but not yet attached to a
+ *     native session/run has nothing executing remotely and is cancelled
+ *     directly (the in-flight claim is orphaned; dispatch only acts on
+ *     non-cancelled tasks).
+ *
+ * Never throws for guard failures: returns `{ ok:false, reason }` so the UI
+ * shows why cancellation was refused.
+ */
+export async function cancelAgentOSRun(input: {
+  workspaceId: number
+  actor?: string | null
+  delegationId?: string | null
+  taskId?: number | null
+}): Promise<{
+  ok: boolean
+  cancelled?: boolean
+  scope?: 'queued' | 'active'
+  terminated?: boolean
+  alreadyEnded?: boolean
+  reason?: string
+  taskId?: number
+  delegationId?: string | null
+}> {
+  const db = getDatabase()
+  const workspaceId = input.workspaceId
+  if (!input.delegationId && !input.taskId) {
+    return { ok: false, reason: 'delegationId or taskId is required' }
+  }
+
+  let delegationId: string | null = input.delegationId ?? null
+  let delegation: AgentOSDelegation | null = null
+  if (delegationId) {
+    delegation = getDelegation(delegationId, workspaceId)
+    if (!delegation) return { ok: false, reason: 'Delegation not found in this workspace' }
+  }
+  const taskId = input.taskId ?? delegation?.taskId
+  if (!taskId) return { ok: false, reason: 'Task not found' }
+
+  const task = db.prepare(
+    'SELECT id, title, status, project_id, workspace_id FROM tasks WHERE id = ? AND workspace_id = ?',
+  ).get(taskId, workspaceId) as
+    | { id: number; title: string; status: string; project_id: number | null; workspace_id: number }
+    | undefined
+  if (!task) return { ok: false, reason: 'Task not found in this workspace' }
+
+  if (!delegation) {
+    delegation = getLatestDelegationForTask(taskId, workspaceId)
+    delegationId = delegation?.id ?? null
+  } else {
+    delegationId = delegation.id
+  }
+
+  const actor = input.actor || 'operator'
+  const now = Math.floor(Date.now() / 1000)
+
+  const markCancelled = (scope: 'queued' | 'active'): { ok: boolean; cancelled: boolean; scope: 'queued' | 'active'; taskId: number; delegationId: string | null } => {
+    db.prepare(
+      "UPDATE tasks SET status = 'cancelled', updated_at = ? WHERE id = ? AND workspace_id = ?",
+    ).run(now, taskId, workspaceId)
+    if (delegation) {
+      updateDelegation(delegation.id, workspaceId, {
+        status: 'cancelled',
+        completed: true,
+        errorMessage: 'Cancelled by operator',
+      })
+      try {
+        releaseReservationForTask(taskId, workspaceId)
+      } catch {
+        // Reservation release is best-effort and must never break cancellation.
+      }
+      db_helpers.logActivity(
+        'agentos_cancelled', 'task', taskId, actor,
+        `Cancelled AgentOS run ${delegation.id} (${scope}) — native session ${delegation.nativeSessionId ? 'terminated' : 'never started'}`,
+        { delegation_id: delegation.id, task_id: taskId, scope },
+        workspaceId,
+      )
+      return { ok: true, cancelled: true, scope, taskId, delegationId: delegation.id }
+    }
+    db_helpers.logActivity(
+      'agentos_cancelled', 'task', taskId, actor,
+      `Cancelled queued AgentOS task ${taskId} before claim (${scope})`,
+      { task_id: taskId, scope },
+      workspaceId,
+    )
+    return { ok: true, cancelled: true, scope, taskId, delegationId: null }
+  }
+
+  // Case A — not yet claimed: pure queued cancel, safe for every ecosystem.
+  if (!delegation) {
+    if (!['inbox', 'assigned', 'awaiting_owner', 'backlog'].includes(task.status)) {
+      return { ok: false, reason: `Task is ${task.status} with no delegation row — nothing to cancel` }
+    }
+    return markCancelled('queued')
+  }
+
+  // Case B — delegation exists; only active (non-terminal) runs are cancellable.
+  if (!['claimed', 'accepted', 'pending', 'retrying'].includes(delegation.status)) {
+    return { ok: false, reason: `Run is already ${delegation.status} — only active runs can be cancelled` }
+  }
+
+  // No native session/run attached yet: nothing is executing remotely.
+  if (!delegation.nativeSessionId && !delegation.nativeRunId) {
+    return markCancelled('active')
+  }
+
+  const ecosystem = (delegation.platoonId || delegation.runtimeType || '').toLowerCase()
+  if (ecosystem !== 'gamut') {
+    return {
+      ok: false,
+      reason: `Active termination is not supported for the ${ecosystem || 'current'} executor — the run is executing in a native session Mission Control cannot stop. Cancel it from its own CLI, or cancel while queued before dispatch.`,
+    }
+  }
+
+  // Gamut: terminate the live host session, then record the cancellation only
+  // if the host confirms (or reports the session already ended). A refused
+  // termination must NOT leave a running session reported as cancelled.
+  const slug = resolveGamutAgentSlug({ workspaceId, delegation })
+  if (!slug || !delegation.nativeSessionId) {
+    return { ok: false, reason: 'Gamut native agent slug is not resolvable from the roster — cannot terminate the host session' }
+  }
+  let termination: { terminated: boolean; alreadyEnded: boolean }
+  try {
+    termination = await terminateGamutSession(slug, delegation.nativeSessionId)
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `Gamut host refused session termination: ${error instanceof Error ? error.message : 'unknown host error'} — the run is still active.`,
+    }
+  }
+  const outcome = markCancelled('active')
+  return { ...outcome, terminated: termination.terminated, alreadyEnded: termination.alreadyEnded }
+}
+
+/**
+ * Resolve the native Gamut host slug for a delegation's agent from the
+ * synchronized roster (`pc:gamut:<slug>` external ids stored in agent
+ * config), matching by routing agent or specialist name.
+ */
+function resolveGamutAgentSlug(input: {
+  workspaceId: number
+  delegation: AgentOSDelegation
+}): string | null {
+  const names = [input.delegation.routingAgentName, input.delegation.specialistName]
+    .filter((name): name is string => typeof name === 'string' && name.length > 0)
+  if (names.length === 0) return null
+  const placeholders = names.map(() => '?').join(',')
+  const rows = getDatabase().prepare(`
+    SELECT config FROM agents
+    WHERE workspace_id = ? AND source = 'agentos-external' AND name IN (${placeholders})
+    LIMIT 5
+  `).all(input.workspaceId, ...names) as Array<{ config: string | null }>
+  for (const row of rows) {
+    if (!row.config) continue
+    try {
+      const cfg = JSON.parse(row.config)
+      const agentos = cfg.agentos && typeof cfg.agentos === 'object' ? cfg.agentos : null
+      const externalId = agentos && typeof agentos.externalAgentId === 'string' ? agentos.externalAgentId : null
+      if (!externalId) continue
+      const slug = externalId.startsWith('pc:gamut:') ? externalId.slice('pc:gamut:'.length) : null
+      if (slug) return slug
+    } catch {
+      // Malformed config on this agent — try the next match.
+    }
+  }
+  return null
 }
 
 /**

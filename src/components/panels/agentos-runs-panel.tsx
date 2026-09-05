@@ -2,9 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
-import { apiFetch } from '@/lib/api-client'
+import { ApiError, apiFetch } from '@/lib/api-client'
 import { useSmartPoll } from '@/lib/use-smart-poll'
 import { useNavigateToProjectCommand } from '@/lib/navigation'
+import { useMissionControl } from '@/store'
 
 type RunState =
   | 'QUEUED' | 'HELD' | 'WAITING' | 'RUNNING' | 'REVIEWING'
@@ -94,6 +95,7 @@ const ERROR_CLASS_LABELS: Record<string, string> = {
 
 export function AgentOSRunsPanel() {
   const navigateToProject = useNavigateToProjectCommand()
+  const { currentUser } = useMissionControl()
   const [runs, setRuns] = useState<AgentOSRun[]>([])
   const [summary, setSummary] = useState<{ total: number; byState: Partial<Record<RunState, number>> } | null>(null)
   const [projects, setProjects] = useState<ProjectOption[]>([])
@@ -103,6 +105,8 @@ export function AgentOSRunsPanel() {
   const [agentQuery, setAgentQuery] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [retryBusy, setRetryBusy] = useState<string | null>(null)
+  const [cancelBusy, setCancelBusy] = useState<string | null>(null)
+  const [kickBusy, setKickBusy] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -199,6 +203,70 @@ export function AgentOSRunsPanel() {
 
   const retryable = (run: AgentOSRun): boolean => run.state === 'FAILED'
 
+  const cancellable = (run: AgentOSRun): boolean =>
+    run.state === 'QUEUED' || run.state === 'HELD' || run.state === 'WAITING' || run.state === 'RUNNING'
+
+  /** Extract the structured refusal message from an ApiError payload. */
+  const refusalMessage = (err: unknown): string | null => {
+    if (err instanceof ApiError && err.payload && typeof err.payload === 'object') {
+      const payload = err.payload as Record<string, unknown>
+      if (typeof payload.reason === 'string' && payload.reason) return payload.reason
+      if (typeof payload.error === 'string' && payload.error) return payload.error
+    }
+    return err instanceof Error ? err.message : null
+  }
+
+  const cancelRun = useCallback(async (run: AgentOSRun) => {
+    if (!window.confirm(`Cancel this ${run.state.toLowerCase()} run for task #${run.taskId}?`)) return
+    setCancelBusy(run.id)
+    setError(null)
+    setNotice(null)
+    try {
+      const body = run.delegationId
+        ? { action: 'cancel', delegationId: run.delegationId }
+        : { action: 'cancel', taskId: run.taskId }
+      const data = await apiFetch<{ ok?: boolean; cancelled?: boolean; scope?: string; reason?: string; error?: string }>(
+        '/api/agentos/runs',
+        { method: 'POST', body: JSON.stringify(body) },
+      )
+      if (data.ok && data.cancelled) {
+        setNotice(
+          data.scope === 'active'
+            ? `Cancelled — host session terminated, task #${run.taskId} marked cancelled.`
+            : `Cancelled — task #${run.taskId} stopped before dispatch.`,
+        )
+      } else {
+        setNotice(data.reason || data.error || 'Cancellation was not applied')
+      }
+      await load()
+    } catch (err) {
+      setNotice(refusalMessage(err) || 'Cancellation failed')
+    } finally {
+      setCancelBusy(null)
+    }
+  }, [load])
+
+  const kickDispatch = useCallback(async () => {
+    if (!window.confirm('Trigger the AgentOS dispatch scheduler now? Assigned/approved work will be routed and claimed immediately instead of waiting for the next tick (up to 60s).')) return
+    setKickBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const response = await apiFetch<Response>('/api/scheduler', {
+        method: 'POST',
+        body: JSON.stringify({ task_id: 'task_dispatch' }),
+        raw: true,
+      })
+      const data = await response.json().catch(() => ({})) as { message?: string }
+      setNotice(`Dispatch kick complete${data.message ? ` — ${data.message}` : ''}`)
+      await load()
+    } catch (err) {
+      setNotice(refusalMessage(err) || 'Dispatch kick failed')
+    } finally {
+      setKickBusy(false)
+    }
+  }, [load])
+
   return (
     <div className="p-4 md:p-6 space-y-5">
       <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
@@ -212,6 +280,11 @@ export function AgentOSRunsPanel() {
         <div className="flex items-center gap-3 text-xs text-muted-foreground">
           <span>{lastRefreshed ? `Updated ${fmtEpoch(lastRefreshed)}` : '—'}</span>
           {hasActive && <span className="flex items-center gap-1.5 text-sky-400"><span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-sky-400" />live (5s)</span>}
+          {currentUser?.role === 'admin' && (
+            <Button size="sm" variant="outline" disabled={kickBusy} onClick={() => void kickDispatch()} title="Run the AgentOS dispatch scheduler now (reconcile → broker → claim → execute)">
+              {kickBusy ? 'Dispatching…' : 'Kick Dispatch'}
+            </Button>
+          )}
           <Button size="sm" variant="outline" disabled={loading} onClick={() => void load()}>{loading ? 'Refreshing…' : 'Refresh'}</Button>
         </div>
       </div>
@@ -319,8 +392,21 @@ export function AgentOSRunsPanel() {
                       </div>
 
                       {run.projectId !== null && (
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <Button size="sm" variant="outline" onClick={() => navigateToProject(run.projectId!)}>Open Project Command</Button>
+                          {run.objectiveId !== null && (
+                            <Button size="sm" variant="outline" onClick={() => navigateToProject(run.projectId!, run.objectiveId!)}>Review plan / approval</Button>
+                          )}
+                          {cancellable(run) && (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={cancelBusy === run.id}
+                              onClick={() => void cancelRun(run)}
+                            >
+                              {cancelBusy === run.id ? 'Cancelling…' : 'Cancel run'}
+                            </Button>
+                          )}
                           {retryable(run) && (
                             <Button
                               size="sm"
@@ -335,6 +421,11 @@ export function AgentOSRunsPanel() {
                       {retryable(run) && (
                         <p className="text-[10px] text-muted-foreground">
                           Retry preserves the failed delegation as history and re-enters this task through current AgentOS routing; authorization/cost gates re-run at dispatch. Paused or blocked projects refuse retry until resumed in Project Command.
+                        </p>
+                      )}
+                      {cancellable(run) && (
+                        <p className="text-[10px] text-muted-foreground">
+                          Cancel stops queued work before dispatch, or terminates an active Gamut run at the host. Executors without a supported termination path will refuse with the reason — cancellation is never faked.
                         </p>
                       )}
 

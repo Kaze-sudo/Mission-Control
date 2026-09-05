@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { mutationLimiter } from '@/lib/rate-limit'
 import {
+  cancelAgentOSRun,
   listAgentOSRuns,
   retryAgentOSRun,
   type AgentOSRunDisplayState,
@@ -60,12 +61,16 @@ export async function GET(request: NextRequest) {
 /**
  * POST /api/agentos/runs — operator actions on the canonical run feed.
  *
- * Currently only `retry`, which re-enters a terminal FAILED run through the
- * existing AgentOS pipeline (fresh routing + dispatch-time authorization).
- * The failed delegation is preserved as history. Project pause/block state is
- * honored — retry is new work and never bypasses the pause gate.
+ * - `retry` re-enters a terminal FAILED run through the existing AgentOS
+ *   pipeline (fresh routing + dispatch-time authorization). The failed
+ *   delegation is preserved as history. Project pause/block state is honored
+ *   — retry is new work and never bypasses the pause gate.
+ * - `cancel` cancels queued work (pure DB transition) or terminates an active
+ *   Gamut run via the live host session API. Executors without a supported
+ *   termination path are refused with the reason — cancellation is never
+ *   faked.
  *
- * Body: { action: 'retry', delegationId?: string, taskId?: number }
+ * Body: { action: 'retry' | 'cancel', delegationId?: string, taskId?: number }
  */
 export async function POST(request: NextRequest) {
   const auth = requireRole(request, 'operator')
@@ -80,7 +85,7 @@ export async function POST(request: NextRequest) {
   const actor = auth.user.username || auth.user.display_name || 'operator'
   const action = String(body.action || '')
 
-  if (action !== 'retry') {
+  if (action !== 'retry' && action !== 'cancel') {
     return NextResponse.json({ error: `Unsupported action: ${action}` }, { status: 400 })
   }
 
@@ -96,12 +101,14 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    const result = retryAgentOSRun({ workspaceId, actor, delegationId, taskId })
+    const result = action === 'cancel'
+      ? await cancelAgentOSRun({ workspaceId, actor, delegationId, taskId })
+      : retryAgentOSRun({ workspaceId, actor, delegationId, taskId })
     if (result.ok) return NextResponse.json(result)
-    const status = result.held ? 409 : 400
+    const status = 'held' in result && result.held ? 409 : 400
     return NextResponse.json(result, { status })
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Failed to retry run'
+    const message = error instanceof Error ? error.message : `Failed to ${action} run`
     return NextResponse.json({ error: message }, { status: 500 })
   }
 }

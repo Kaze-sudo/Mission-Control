@@ -331,6 +331,30 @@ export async function runGamutAgent(input: {
 
   throw new Error(`Gamut session ${sessionId} timed out after ${Math.round(timeoutMs / 1000)}s`)
 }
+
+/**
+ * Terminate a running Gamut host session (executor-aware cancel).
+ *
+ * The host session store implements `DELETE /agents/{slug}/sessions/{id}`
+ * (verified live: a bogus id returns the session-scoped `Session not found`
+ * body, distinct from the generic `Not found` unknown-route error). A 2xx
+ * confirms termination; a 404 means the session already ended on the host, so
+ * there is nothing further to terminate (idempotent success). Any other
+ * status is surfaced as a refusal so callers never report a cancelled run
+ * that is still executing remotely.
+ */
+export async function terminateGamutSession(
+  slug: string,
+  sessionId: string,
+  timeoutMs = 5000,
+): Promise<{ terminated: boolean; alreadyEnded: boolean }> {
+  const url = `${baseUrl()}/agents/${encodeURIComponent(slug)}/sessions/${encodeURIComponent(sessionId)}`
+  const response = await fetchWithTimeout(url, { method: 'DELETE' }, timeoutMs)
+  if (response.ok) return { terminated: true, alreadyEnded: false }
+  if (response.status === 404) return { terminated: false, alreadyEnded: true }
+  const detail = await response.text().catch(() => '')
+  throw new Error(`Gamut host refused session termination (HTTP ${response.status})${detail ? `: ${detail.slice(0, 200)}` : ''}`)
+}
 export function isGamutHostListeningSync(): boolean {
   if (process.platform !== 'win32') return false
   try {

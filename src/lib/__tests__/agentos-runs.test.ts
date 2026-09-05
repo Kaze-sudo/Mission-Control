@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  cancelAgentOSRun,
   classifyRunError,
   deriveRunDisplayState,
   listAgentOSRuns,
@@ -12,6 +13,15 @@ const state = vi.hoisted(() => ({
   db: null as InstanceType<typeof Database> | null,
   routeResult: null as unknown,
   commandState: 'active' as string,
+  terminateResult: { terminated: true, alreadyEnded: false } as { terminated: boolean; alreadyEnded: boolean },
+  terminateThrows: null as string | null,
+}))
+
+vi.mock('@/lib/gamut-host', () => ({
+  terminateGamutSession: () => {
+    if (state.terminateThrows) return Promise.reject(new Error(state.terminateThrows))
+    return Promise.resolve(state.terminateResult)
+  },
 }))
 
 vi.mock('@/lib/db', () => ({
@@ -36,7 +46,7 @@ function seedSchema(db: InstanceType<typeof Database>): void {
     );
     CREATE TABLE agents (
       id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, workspace_id INTEGER NOT NULL,
-      source TEXT, runtime_type TEXT
+      source TEXT, runtime_type TEXT, config TEXT
     );
     CREATE TABLE tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, description TEXT, status TEXT,
@@ -148,7 +158,10 @@ beforeEach(() => {
   const db = state.db
   insertProject(db, 1, 'Alpha')
   insertProject(db, 2, 'Beta')
-  db.prepare('INSERT INTO agents (name, workspace_id, source, runtime_type) VALUES (?, 1, ?, ?)').run(gamutAgent.name, gamutAgent.source, gamutAgent.runtime_type)
+  db.prepare('INSERT INTO agents (name, workspace_id, source, runtime_type, config) VALUES (?, 1, ?, ?, ?)').run(
+    gamutAgent.name, gamutAgent.source, gamutAgent.runtime_type,
+    JSON.stringify({ agentos: { externalAgentId: 'pc:gamut:sluggie' } }),
+  )
   db.prepare('INSERT INTO agents (name, workspace_id, source, runtime_type) VALUES (?, 1, ?, ?)').run(hermesAgent.name, hermesAgent.source, hermesAgent.runtime_type)
 })
 
@@ -157,6 +170,8 @@ afterEach(() => {
   state.db = null
   state.routeResult = null
   state.commandState = 'active'
+  state.terminateResult = { terminated: true, alreadyEnded: false }
+  state.terminateThrows = null
 })
 
 describe('deriveRunDisplayState', () => {
@@ -384,6 +399,99 @@ describe('retryAgentOSRun', () => {
     const result = retryAgentOSRun({ workspaceId: 2, delegationId: 'del-204' })
     expect(result.ok).toBe(false)
     expect(result.reason).toContain('not found')
+  })
+})
+
+describe('cancelAgentOSRun', () => {
+  it('cancels a queued task before claim — pure DB transition, any ecosystem', async () => {
+    const db = state.db!
+    insertTask(db, { id: 400, title: 'Queued mission', status: 'assigned', projectId: 1, metadata: missionMetadata(10), updatedAt: 6000 })
+
+    const result = await cancelAgentOSRun({ workspaceId: 1, taskId: 400, actor: 'tester' })
+    expect(result.ok).toBe(true)
+    expect(result.cancelled).toBe(true)
+    expect(result.scope).toBe('queued')
+    const task = db.prepare('SELECT status FROM tasks WHERE id = 400').get() as { status: string }
+    expect(task.status).toBe('cancelled')
+  })
+
+  it('refuses cancellation of a terminal run', async () => {
+    const db = state.db!
+    insertTask(db, { id: 401, title: 'Finished mission', status: 'done', projectId: 1, metadata: missionMetadata(10), updatedAt: 6000 })
+    insertDelegation(db, { id: 'del-401', taskId: 401, projectId: 1, platoonId: 'gamut', routingAgentName: gamutAgent.name, status: 'completed', createdAt: 5000, updatedAt: 6000, completedAt: 6000 })
+
+    const result = await cancelAgentOSRun({ workspaceId: 1, delegationId: 'del-401' })
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain('already completed')
+  })
+
+  it('terminates an active Gamut session at the host and records cancellation', async () => {
+    const db = state.db!
+    insertTask(db, { id: 402, title: 'Live gamut mission', status: 'in_progress', projectId: 1, metadata: missionMetadata(10), updatedAt: 6000 })
+    insertDelegation(db, {
+      id: 'del-402', taskId: 402, projectId: 1, platoonId: 'gamut',
+      routingAgentName: gamutAgent.name, specialistName: 'Gamut Specialist', runtimeType: 'gamut',
+      status: 'claimed', nativeSessionId: 'sess-live', createdAt: 5500, updatedAt: 6000,
+    })
+
+    const result = await cancelAgentOSRun({ workspaceId: 1, delegationId: 'del-402', actor: 'tester' })
+    expect(result.ok).toBe(true)
+    expect(result.cancelled).toBe(true)
+    expect(result.scope).toBe('active')
+    expect(result.terminated).toBe(true)
+    const delegation = db.prepare('SELECT status, error_message, completed_at FROM agentos_delegations WHERE id = ?').get('del-402') as { status: string; error_message: string | null; completed_at: number | null }
+    expect(delegation.status).toBe('cancelled')
+    expect(delegation.completed_at).not.toBeNull()
+    const task = db.prepare('SELECT status FROM tasks WHERE id = 402').get() as { status: string }
+    expect(task.status).toBe('cancelled')
+  })
+
+  it('refuses to cancel when the Gamut host rejects termination — run stays active', async () => {
+    const db = state.db!
+    state.terminateThrows = 'Gamut host refused session termination (HTTP 500)'
+    insertTask(db, { id: 403, title: 'Host-down mission', status: 'in_progress', projectId: 1, metadata: missionMetadata(10), updatedAt: 6000 })
+    insertDelegation(db, {
+      id: 'del-403', taskId: 403, projectId: 1, platoonId: 'gamut',
+      routingAgentName: gamutAgent.name, status: 'accepted', nativeSessionId: 'sess-host-down', createdAt: 5500, updatedAt: 6000,
+    })
+
+    const result = await cancelAgentOSRun({ workspaceId: 1, delegationId: 'del-403' })
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain('refused')
+    const delegation = db.prepare('SELECT status FROM agentos_delegations WHERE id = ?').get('del-403') as { status: string }
+    expect(delegation.status).toBe('accepted')
+    const task = db.prepare('SELECT status FROM tasks WHERE id = 403').get() as { status: string }
+    expect(task.status).toBe('in_progress')
+  })
+
+  it('refuses active cancellation for executors without a termination path', async () => {
+    const db = state.db!
+    insertTask(db, { id: 404, title: 'Hermes live', status: 'in_progress', projectId: 1, metadata: missionMetadata(10), updatedAt: 6000 })
+    insertDelegation(db, {
+      id: 'del-404', taskId: 404, projectId: 1, platoonId: 'hermes',
+      routingAgentName: hermesAgent.name, status: 'pending', nativeRunId: 'hermes-run-1', createdAt: 5500, updatedAt: 6000,
+    })
+
+    const result = await cancelAgentOSRun({ workspaceId: 1, delegationId: 'del-404' })
+    expect(result.ok).toBe(false)
+    expect(result.reason).toContain('not supported')
+    const delegation = db.prepare('SELECT status FROM agentos_delegations WHERE id = ?').get('del-404') as { status: string }
+    expect(delegation.status).toBe('pending')
+  })
+
+  it('cancels a claimed delegation that never attached a native session (nothing running remotely)', async () => {
+    const db = state.db!
+    insertTask(db, { id: 405, title: 'Claimed, pre-execution', status: 'assigned', projectId: 1, metadata: missionMetadata(10), updatedAt: 6000 })
+    insertDelegation(db, {
+      id: 'del-405', taskId: 405, projectId: 1, platoonId: 'hermes',
+      routingAgentName: hermesAgent.name, status: 'claimed', createdAt: 5500, updatedAt: 6000,
+    })
+
+    const result = await cancelAgentOSRun({ workspaceId: 1, delegationId: 'del-405' })
+    expect(result.ok).toBe(true)
+    expect(result.scope).toBe('active')
+    const delegation = db.prepare('SELECT status FROM agentos_delegations WHERE id = ?').get('del-405') as { status: string }
+    expect(delegation.status).toBe('cancelled')
   })
 })
 
