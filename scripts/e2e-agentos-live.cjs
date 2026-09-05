@@ -190,12 +190,47 @@ function loadEnv() {
     AUTH_USER: process.env.AUTH_USER || '',
     AUTH_PASS: process.env.AUTH_PASS || '',
     AUTH_PASS_B64: process.env.AUTH_PASS_B64 || '',
+    AUTH_SOURCE: '',
   }
-  if (!fs.existsSync(envPath)) return out
-  const raw = fs.readFileSync(envPath, 'utf8').replace(/^\uFEFF/, '')
-  for (const line of raw.split(/\r?\n/)) {
-    const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/)
-    if (m && out[m[1]] === '') out[m[1]] = m[2]
+  const fromProcess = {
+    AUTH_USER: !!process.env.AUTH_USER,
+    AUTH_PASS: !!process.env.AUTH_PASS,
+    AUTH_PASS_B64: !!process.env.AUTH_PASS_B64,
+  }
+  if (fs.existsSync(envPath)) {
+    const raw = fs.readFileSync(envPath, 'utf8').replace(/^\uFEFF/, '')
+    for (const line of raw.split(/\r?\n/)) {
+      const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/)
+      if (m && out[m[1]] === '') {
+        out[m[1]] = m[2]
+        fromProcess[m[1]] = false
+      }
+    }
+  }
+  // Mirror the server's resolveSeedAuthPassword semantics: AUTH_PASS_B64
+  // (canonical base64) is authoritative when valid; AUTH_PASS is the fallback.
+  // Report the effective source and warn on divergence so a local .env can
+  // never silently override credentials passed on the command line.
+  let effective = null
+  let b64Decoded = null
+  if (out.AUTH_PASS_B64) {
+    const normalized = out.AUTH_PASS_B64.trim()
+    const canonical = /^[A-Za-z0-9+/]*={0,2}$/.test(normalized)
+      ? Buffer.from(normalized, 'base64').toString('base64')
+      : null
+    if (canonical !== null && canonical === normalized) {
+      b64Decoded = Buffer.from(normalized, 'base64').toString('utf8')
+      if (b64Decoded) effective = 'AUTH_PASS_B64'
+    }
+  }
+  if (!effective && out.AUTH_PASS) effective = 'AUTH_PASS'
+  out.AUTH_SOURCE = effective || 'NONE'
+  if (effective === 'AUTH_PASS_B64' && out.AUTH_PASS && out.AUTH_PASS !== b64Decoded) {
+    console.log('      WARNING: AUTH_PASS and AUTH_PASS_B64 both set but differ — server will use AUTH_PASS_B64')
+  }
+  if (fromProcess.AUTH_USER || fromProcess.AUTH_PASS || fromProcess.AUTH_PASS_B64) {
+    const parts = Object.entries(fromProcess).filter(([, v]) => v).map(([k]) => `${k}=process`).join(' ')
+    console.log(`      auth env: ${parts}${fs.existsSync(envPath) ? ' (rest from .env)' : ''}`)
   }
   return out
 }
@@ -204,11 +239,9 @@ async function login() {
   const env = loadEnv()
   const username = env.AUTH_USER || 'admin'
   let password = env.AUTH_PASS || ''
-  if (env.AUTH_PASS_B64) {
-    try {
-      const decoded = Buffer.from(env.AUTH_PASS_B64.replace(/\s+/g, ''), 'base64').toString('utf8')
-      if (decoded) password = decoded
-    } catch { /* fall back to AUTH_PASS */ }
+  if (env.AUTH_SOURCE === 'AUTH_PASS_B64') {
+    const decoded = Buffer.from(env.AUTH_PASS_B64.replace(/\s+/g, ''), 'base64').toString('utf8')
+    if (decoded) password = decoded
   }
   if (!password) throw new Error('No AUTH_PASS/AUTH_PASS_B64 in .env — cannot authenticate')
   const res = await api('/api/auth/login', { method: 'POST', body: { username, password } })

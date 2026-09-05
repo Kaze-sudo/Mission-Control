@@ -102,4 +102,5 @@ OpenAPI spec: `openapi.json`. Interactive docs at `/docs` when running.
 - **Standalone mode**: Use `node .next/standalone/server.js`, not `pnpm start` (which requires full `node_modules`)
 - **better-sqlite3**: Native addon -- needs rebuild when switching Node versions (`pnpm rebuild better-sqlite3`)
 - **AUTH_PASS with `#`**: Quote it (`AUTH_PASS="my#pass"`) or use `AUTH_PASS_B64` (base64-encoded)
+- **AUTH_PASS_B64 precedence**: When both are set, a valid `AUTH_PASS_B64` **wins** over `AUTH_PASS` (they are two encodings of one secret; the server warns loudly when they decode to different values). Shell `AUTH_PASS` does not override a `.env` `AUTH_PASS_B64`
 - **Gateway optional**: Set `NEXT_PUBLIC_GATEWAY_OPTIONAL=true` for standalone deployments without gateway connectivity

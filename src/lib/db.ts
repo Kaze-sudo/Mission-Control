@@ -126,7 +126,22 @@ export function resolveSeedAuthPassword(env: NodeJS.ProcessEnv = process.env): s
         logger.warn('AUTH_PASS_B64 failed base64 verification; falling back to AUTH_PASS')
         return env.AUTH_PASS || null
       }
-      if (decoded.length > 0) return decoded
+      if (decoded.length > 0) {
+        // AUTH_PASS_B64 and AUTH_PASS are two encodings of the same secret
+        // (the B64 form exists because '#' and other characters cannot be
+        // stored literally in .env). When both are set they must agree — a
+        // divergence almost always means one of them was rotated without the
+        // other, and the silent precedence made the effective password
+        // ambiguous. B64 remains authoritative; surface the mismatch loudly.
+        if (env.AUTH_PASS && env.AUTH_PASS !== decoded) {
+          logger.warn(
+            'AUTH_PASS and AUTH_PASS_B64 are both set but decode to different values — ' +
+            'AUTH_PASS_B64 is authoritative and AUTH_PASS is ignored. ' +
+            'Rotate both encodings together or remove the one you do not use.',
+          )
+        }
+        return decoded
+      }
       logger.warn('AUTH_PASS_B64 is set but decoded to an empty value; falling back to AUTH_PASS')
     } catch {
       logger.warn('AUTH_PASS_B64 is not valid base64; falling back to AUTH_PASS')

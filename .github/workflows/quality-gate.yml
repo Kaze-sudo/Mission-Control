@@ -103,13 +103,22 @@ jobs:
         run: pnpm build
 
       - name: Start server (standalone)
+        # .env.test is copied for parity with the main gate; the E2E script and
+        # the server both read AUTH_* from it. No local .env exists on the
+        # runner, so process/.env.test credentials cannot diverge.
         run: |
-          node .next/standalone/server.js &
+          cp .env.test .env
+          node .next/standalone/server.js > agentos-e2e-server.log 2>&1 &
+          echo $! > agentos-e2e-server.pid
+          up=0
           for i in $(seq 1 30); do
             code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/ || true)
-            if [ "$code" != "000" ]; then echo "server up (HTTP $code)"; break; fi
+            if [ "$code" != "000" ]; then echo "server up (HTTP $code)"; up=1; break; fi
             sleep 2
           done
+          if [ "$up" != "1" ]; then
+            echo "server failed to start"; tail -50 agentos-e2e-server.log; exit 1
+          fi
         env:
           PORT: '3000'
           AUTH_USER: testadmin
@@ -128,3 +137,16 @@ jobs:
           AUTH_USER: testadmin
           AUTH_PASS: testpass1234!
           MC_URL: http://127.0.0.1:3000
+
+      - name: Collect server log on failure
+        if: failure()
+        run: |
+          echo "--- agentos-e2e-server.log (tail) ---"
+          tail -100 agentos-e2e-server.log || true
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f agentos-e2e-server.pid ]; then
+            kill "$(cat agentos-e2e-server.pid)" 2>/dev/null || true
+          fi
