@@ -5,6 +5,7 @@ import { analyzeProjectForce } from './project-force-planning'
 import { bindExternalAgentToProject } from './external-project-bindings'
 import { getProjectCommand, updateProjectCommand } from './project-command'
 import { readTaskEscalation } from './agentos-escalation'
+import { eventBus } from './event-bus'
 
 export interface ObjectiveMissionInput {
   key?: string
@@ -234,6 +235,22 @@ export function createObjectivePlan(input: {
       const taskId = Number(result.lastInsertRowid)
       taskIds.set(mission.key, taskId)
       rows.push({ ...mission, taskId, dependsOnTaskIds: dependencyTaskIds })
+      eventBus.broadcast('task.created', {
+        id: taskId,
+        title: mission.title,
+        description: mission.description || plan.description,
+        status,
+        priority: mission.priority,
+        project_id: input.projectId,
+        project_ticket_no: ticket.ticket_counter,
+        assigned_to: null,
+        created_by: actor,
+        created_at: now,
+        updated_at: now,
+        tags: ['agentos-objective'],
+        metadata,
+        workspace_id: input.workspaceId,
+      })
       db_helpers.logActivity(
         'agentos_objective_mission_created', 'task', taskId, actor,
         `Created objective mission: ${mission.title}`,
@@ -368,6 +385,12 @@ export function promoteReadyObjectiveMissions(): {
     db.prepare(
       "UPDATE tasks SET status = 'inbox', metadata = ?, updated_at = ? WHERE id = ? AND workspace_id = ? AND status = 'backlog'",
     ).run(JSON.stringify(nextMetadata), now, task.id, task.workspace_id)
+    eventBus.broadcast('task.status_changed', {
+      id: task.id,
+      workspace_id: task.workspace_id,
+      status: 'inbox',
+      updated_at: now,
+    })
 
     try {
       routeTaskWithinProject({
