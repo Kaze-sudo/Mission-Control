@@ -13,7 +13,7 @@ restoration + root-cause deep-dive).
 |---|---|---|---|---|---|---|---|---|---|
 | **Hermes** (local CLI, `v0.21.0`) | ✅ 7 real profiles (`coreops`, `estimator`, `fieldops`, `guardian`, `orchestrator`, `release`, `verifier`) | ✅ per-profile dispatch (`-p <profile> -z <prompt>`), free model `upstage/solar-pro4:free` via Nous Portal | ✅ fingerprint `e0ce29093dff`, capability routing `construction-operations` | ✅ approval `VALID` gated dispatch; unknown-cost class honored | ✅ **REAL** — output `REAL HERMES DISPATCH OK` captured from live inference | ⚠️ delegation UUID yes; native session id `null` (one-shot CLI mode) | ✅ run feed `resultSummary` | ✅ `REVIEWING` (Aegis) | ✅ stub-based live E2E + real-binary probe |
 | **Codex** (plugin-appserver CLI, `0.153.4`) | ✅ after named profile exists (`~/.codex/<name>.config.toml`); zero roster agents with only the main `config.toml` | ✅ `codex-cli 0.153.4` at `~/.codex/plugins/.plugin-appserver/codex.exe`, model from profile (`gpt-6-astra`) | ✅ fingerprint `9673e75f875e`, capability routing `performance-platform` | ✅ approval `VALID` | ✅ **REAL** — output `REAL CODEX CHECK OK` captured from live run | ⚠️ delegation UUID yes; native session id `null` | ✅ run feed `resultSummary` | ✅ `REVIEWING` (Aegis) | ✅ stub-based live E2E + real-binary probe |
-| **Gamut / SuperAgent** (desktop host) | ✅ 20 real agents via live host API (`/api/agents`) once the desktop app is running — truthfully `offline` while it is down | ✅ effective runtime (`generic` / `gpt-5.6-terra`) read live; container env verified inside WSL (`ANTHROPIC_BASE_URL=host.docker.internal:4000`, `--model gpt-5.6-terra`) | ✅ plan builds; router fail-closed while offline; dispatched once host was up | ✅ approval `VALID` (fingerprint-bound) | ⚠️ **REAL host dispatch reached** — sessions created via `POST /api/agents/<slug>/sessions` (3 real session IDs); blocked at the **LLM bridge credential**: the `gpt-5.6-*` LiteLLM bridge (`D:\Gamut-OpenAI-Bridge`, Startup shortcut) requires `OPENAI_API_KEY` (User env), which is missing on this machine — agent containers spin without a model endpoint until MC's 300s timeout (truthful failure + bounded retry) | ❌ (no completed session yet) | ❌ | ❌ | ⚠️ failure paths verified (offline host fail-closed; 300s timeout → FAILURE, never COMPLETED, bounded retries); happy path awaits bridge credential |
+| **Gamut / SuperAgent** (desktop host) | ✅ 20 real agents via live host API (`/api/agents`) once the desktop app is running — truthfully `offline` while it is down | ✅ effective runtime (`generic` / `gpt-5.6-terra`) read live; container env verified inside WSL (`ANTHROPIC_BASE_URL=host.docker.internal:4000`, `--model gpt-5.6-terra`) | ✅ plan builds; router fail-closed while offline; dispatched once host was up | ✅ approval `VALID` (fingerprint-bound) | ✅ **REAL — verified 2026-09-07**: host session created, container executed, model round-trip via the LiteLLM bridge → Nous Portal free tier (`upstage/solar-pro4:free`); delegation `completed` in 34s, attempt 1 | ✅ `nativeSessionId: db1884b5-f324-4720-97ff-b04347f641f0` on the delegation row | ✅ `resultSummary: "REAL GAMUT DISPATCH OK"` | ✅ `REVIEWING` (Aegis) | ✅ full live probe + failure paths (offline fail-closed; quota-exhaustion → truthful FAILURE, bounded retries, never COMPLETED) |
 | **Claude** (Mission Control-native runtime) | n/a — not a platoon roster; MC agent rows with `runtime_type='claude'` | ✅ Claude Code CLI `2.1.237` on PATH; adapter `callClaudeViaCli` present | n/a | n/a | ⚪ not exercised in this validation (avoids uncontrolled Claude quota spend) | — | — | — | — |
 
 Legend: ✅ verified with evidence · ⚠️ partial (documented) · ❌ blocked · ⚪ not attempted (reason given)
@@ -29,16 +29,18 @@ Legend: ✅ verified with evidence · ⚠️ partial (documented) · ❌ blocked
 
 ## Current blockers
 
-- **Gamut — OpenAI account has no credits (verified 2026-09-07, after the
-  key was set)**: with `OPENAI_API_KEY` configured, the bridge starts via its
-  intended mechanism and the full container path works — container env carries
-  `ANTHROPIC_BASE_URL=http://host.docker.internal:4000`, the WSL-gateway route
-  reaches the bridge, and the bridge logs the agent's `POST /v1/messages`
-  arriving (first call `200 OK`). OpenAI then returns
-  `429 insufficient_quota / credit_balance_exhausted` — the agent retries with
-  backoff and the session terminates truthfully. The moment the account has
-  credits, re-run the Gamut probe; expect provider spend on `gpt-5.6-terra` —
-  keep objectives tiny.
+- **Gamut — resolved 2026-09-07.** Final wiring: the LiteLLM bridge in
+  `D:\Gamut-OpenAI-Bridge` (Startup shortcut, `--host 0.0.0.0`) now routes the
+  `gpt-5.6-*` model names to the **Nous Portal free tier**
+  (`upstage/solar-pro4:free` at `inference-api.nousresearch.com/v1`) instead
+  of the out-of-credits OpenAI account. Auth is sourced at startup from
+  Hermes's own credential store (`%LOCALAPPDATA%\hermes\auth.json`) into
+  `NOUS_API_KEY` — no secret persisted anywhere new. Caveats: (1) the access
+  token is short-lived (~1h; Hermes refreshes it) — restart the bridge if it
+  starts returning 401 after an hour; (2) the bridge must be started *before*
+  the first agent container, whose auto-published port otherwise squats
+  `127.0.0.1:4000`; (3) free tier is rate-limited (~50 rpm) — fine for
+  validation, size accordingly for fleet loads.
 - **Codex**: zero roster agents unless named profiles exist. To reproduce the
   validated state: `printf 'model = "gpt-6-astra"\n' > ~/.codex/mc-validation.config.toml`
   (profile was removed after validation to leave the machine clean).
@@ -55,13 +57,18 @@ Legend: ✅ verified with evidence · ⚠️ partial (documented) · ❌ blocked
   the offline host.
 - Gamut host-restoration evidence (2026-09-07): host relaunched, API healthy
   on `127.0.0.1:47891`; roster shows all 20 agents `available`; MC dispatch
-  created real host sessions (e.g. `032f0a4a-1ba0-4288-ad39-a58b83079348`) and
-  classified the model-bridge stall as `Gamut session ... timed out after
-  300s` → FAILURE with bounded retries, never a false success. Container-side
-  evidence: stuck `claude` processes inside the `superagent` WSL distro carry
+  created real host sessions and classified the model-bridge stall as
+  `Gamut session ... timed out after 300s` → FAILURE with bounded retries,
+  never a false success. Container-side evidence: stuck `claude` processes
+  inside the `superagent` WSL distro carry
   `ANTHROPIC_BASE_URL=http://host.docker.internal:4000`; `/etc/hosts` maps
-  that name to the distro gateway `192.168.16.1`; nothing listened there
-  (bridge absent + port squatted by the container's own published port).
+  that name to the distro gateway `192.168.16.1`.
+- Gamut real-dispatch evidence (2026-09-07, after the Nous re-route): direct
+  host session `GAMUT NOUS DISPATCH OK` (completed in 15s); full MC probe
+  delegation `completed` in 34s on attempt 1 with
+  `resultSummary: "REAL GAMUT DISPATCH OK"`, native session `db1884b5…`,
+  server log line `Dispatching task through Gamut host API (gamutSlug:
+  qbs9bmo0ky)`. Bridge smoke: `NOUS BRIDGE OK` served as `gpt-5.6-terra`.
 - Stub-based live E2E (mock executor, no provider spend):
   `scripts/e2e-agentos-live.cjs` — 62 checks passing, including failure paths
   (stale approval, offline executor, non-zero exit, 402 mapping, transport
