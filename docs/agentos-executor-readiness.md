@@ -29,25 +29,16 @@ Legend: ✅ verified with evidence · ⚠️ partial (documented) · ❌ blocked
 
 ## Current blockers
 
-- **Gamut — LLM bridge credential (exact, verified 2026-09-07)**: the desktop
-  host itself is healthy (`/api/settings` `runtimeReadiness: READY`, 20 agents
-  discovered, real sessions created through the host API). The remaining gap:
-  agent containers call the model bridge at `host.docker.internal:4000` →
-  `192.168.16.1:4000` (the vEthernet (WSL) gateway, injected via the app's
-  `--add-host host.docker.internal:<distro-gateway>` flag). The bridge is the
-  LiteLLM proxy in `D:\Gamut-OpenAI-Bridge` (auto-started by the user's
-  Startup shortcut), which proxies `gpt-5.6-sol/terra/luna` to OpenAI using
-  `OPENAI_API_KEY`. That User env var is **not set**, so the bridge never
-  starts (verified: the script throws
-  `OPENAI_API_KEY is not configured for this Windows user`). Two repairs made
-  so it works the moment the key exists: (1) the port squat — the first agent
-  container's auto-published port takes `127.0.0.1:4000` via WSL localhost
-  relay whenever no bridge is running, so start the bridge *first* (its bind
-  then wins); (2) `start-bridge.ps1` now binds `--host 0.0.0.0` (backup:
-  `start-bridge.ps1.bak-2026-09-07`) so containers can reach it on the WSL
-  gateway interface, not just Windows loopback. To finish validation: set
-  `OPENAI_API_KEY` (User env), start the bridge, re-run the probe. Expect
-  real provider spend on `gpt-5.6-terra` — keep objectives tiny.
+- **Gamut — OpenAI account has no credits (verified 2026-09-07, after the
+  key was set)**: with `OPENAI_API_KEY` configured, the bridge starts via its
+  intended mechanism and the full container path works — container env carries
+  `ANTHROPIC_BASE_URL=http://host.docker.internal:4000`, the WSL-gateway route
+  reaches the bridge, and the bridge logs the agent's `POST /v1/messages`
+  arriving (first call `200 OK`). OpenAI then returns
+  `429 insufficient_quota / credit_balance_exhausted` — the agent retries with
+  backoff and the session terminates truthfully. The moment the account has
+  credits, re-run the Gamut probe; expect provider spend on `gpt-5.6-terra` —
+  keep objectives tiny.
 - **Codex**: zero roster agents unless named profiles exist. To reproduce the
   validated state: `printf 'model = "gpt-6-astra"\n' > ~/.codex/mc-validation.config.toml`
   (profile was removed after validation to leave the machine clean).
