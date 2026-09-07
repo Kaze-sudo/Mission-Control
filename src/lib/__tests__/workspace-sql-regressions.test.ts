@@ -3,7 +3,9 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 function source(path: string): string {
-  return readFileSync(join(process.cwd(), path), 'utf8')
+  // Source-scan assertions match LF-shaped text; CRLF checkouts (Windows,
+  // core.autocrlf=true) must normalize first. Does not weaken any assertion.
+  return readFileSync(join(process.cwd(), path), 'utf8').replace(/\r\n?/g, '\n')
 }
 
 function preparedTemplateSql(path: string): string[] {

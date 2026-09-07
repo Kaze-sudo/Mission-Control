@@ -63,7 +63,17 @@ describe('Skills route security boundaries', () => {
 
     expect(response.status).toBe(200)
     expect(await readFile(join(root, 'safe-skill', 'SKILL.md'), 'utf8')).toContain('Review work')
-    expect((await stat(join(root, 'safe-skill', 'SKILL.md'))).mode & 0o777).toBe(0o600)
+    // Security invariant: the skill document must not be group/world readable
+    // (mode 0o600 on POSIX). Windows has no POSIX file modes: chmod is a
+    // read-only stub, the mode stays 0o666, and access is governed by ACLs —
+    // so on win32 we assert the POSIX-inapplicable part only: no execute bits.
+    // PLATFORM-SPECIFIC: POSIX mode bits are not enforceable on Windows.
+    const createdMode = (await stat(join(root, 'safe-skill', 'SKILL.md'))).mode & 0o777
+    if (process.platform === 'win32') {
+      expect(createdMode & 0o111).toBe(0)
+    } else {
+      expect(createdMode).toBe(0o600)
+    }
     expect(auditMock).toHaveBeenCalledWith(expect.objectContaining({
       action: 'skill.upsert',
       actor: 'operator',
