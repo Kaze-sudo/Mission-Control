@@ -65,10 +65,11 @@ Legend: ✅ verified with evidence · ⚠️ partial (documented) · ❌ blocked
   that name to the distro gateway `192.168.16.1`.
 - Gamut real-dispatch evidence (2026-09-07, after the Nous re-route): direct
   host session `GAMUT NOUS DISPATCH OK` (completed in 15s); full MC probe
-  delegation `completed` in 34s on attempt 1 with
-  `resultSummary: "REAL GAMUT DISPATCH OK"`, native session `db1884b5…`,
-  server log line `Dispatching task through Gamut host API (gamutSlug:
-  qbs9bmo0ky)`. Bridge smoke: `NOUS BRIDGE OK` served as `gpt-5.6-terra`.
+  (`scripts/gamut-dispatch-probe.cjs`) delegation `completed` in 34s on
+  attempt 1 with `resultSummary: "REAL GAMUT DISPATCH OK"`, native session
+  `db1884b5…`, server log line `Dispatching task through Gamut host API
+  (gamutSlug: qbs9bmo0ky)`. Bridge smoke: `NOUS BRIDGE OK` served as
+  `gpt-5.6-terra`.
 - Stub-based live E2E (mock executor, no provider spend):
   `scripts/e2e-agentos-live.cjs` — 62 checks passing, including failure paths
   (stale approval, offline executor, non-zero exit, 402 mapping, transport
