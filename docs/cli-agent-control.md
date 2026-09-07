@@ -128,6 +128,13 @@ node scripts/mc-cli.cjs sessions control --id <session-id> --action terminate
   shared SSE connection — no extra polling needed when an agent drives work via
   the API.
 
+  Delivery semantics (verified by `scripts/e2e-agentos-live.cjs` §4b): the
+  stream is live-only — one broadcast is delivered as exactly one frame per
+  connected client, with no coalescing or de-duplication, and events fired
+  while a client is disconnected are **not** replayed on reconnect (no
+  `Last-Event-ID` support). Clients that must not miss events should hold a
+  connection open or reconcile state via the REST feed after reconnecting.
+
 ### status
 - health (no auth required)
 - overview
