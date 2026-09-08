@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mission Control Security Audit
-# Run: bash scripts/security-audit.sh [--env-file .env] [--strict]
+# Run: bash scripts/security-audit.sh [--env-file .env] [--strict] [--skip-docker]
 
 set -euo pipefail
 
@@ -18,6 +18,7 @@ info() { echo "  [INFO] $1"; }
 # able to change how the audit itself executes.
 ENV_FILE=".env"
 STRICT=0
+SKIP_DOCKER=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --env-file)
@@ -29,8 +30,15 @@ while [[ $# -gt 0 ]]; do
       STRICT=1
       shift
       ;;
+    --skip-docker)
+      # Skip Docker daemon checks. Used by tests so results do not depend on
+      # ambient host state (e.g. whether a mission-control container happens
+      # to be running on the machine executing the test).
+      SKIP_DOCKER=1
+      shift
+      ;;
     --help|-h)
-      echo "Usage: bash scripts/security-audit.sh [--env-file FILE] [--strict]"
+      echo "Usage: bash scripts/security-audit.sh [--env-file FILE] [--strict] [--skip-docker]"
       exit 0
       ;;
     *)
@@ -80,6 +88,9 @@ echo ""
 # 1. .env file permissions
 echo "--- File Permissions ---"
 if [[ -f "$ENV_FILE" ]]; then
+  # POSIX permission bits are not enforceable on every filesystem (e.g. NTFS
+  # via MSYS/Git Bash ignores chmod). Probe enforceability instead of assuming
+  # it: only fail when the filesystem CAN represent the mode but does not.
   if perms=$(stat -c '%a' -- "$ENV_FILE" 2>/dev/null); then
     : # GNU stat
   elif perms=$(stat -f '%Lp' "$ENV_FILE" 2>/dev/null); then
@@ -90,7 +101,15 @@ if [[ -f "$ENV_FILE" ]]; then
   if [[ "$perms" == "600" ]]; then
     pass ".env permissions are 600 (owner read/write only)"
   else
-    fail ".env permissions are $perms (should be 600). Run: chmod 600 $ENV_FILE"
+    probe="$(mktemp "${TMPDIR:-/tmp}/mc-perm-probe.XXXXXX")"
+    chmod 600 "$probe" 2>/dev/null
+    probe_perms="$(stat -c '%a' -- "$probe" 2>/dev/null || stat -f '%Lp' "$probe" 2>/dev/null || echo unknown)"
+    rm -f "$probe"
+    if [[ "$probe_perms" == "600" ]]; then
+      fail ".env permissions are $perms (should be 600). Run: chmod 600 $ENV_FILE"
+    else
+      info ".env permissions are $perms; POSIX permission bits are not enforceable on this filesystem (chmod 600 had no effect) — skipping"
+    fi
   fi
 else
   warn ".env file not found at $ENV_FILE"
@@ -176,7 +195,9 @@ fi
 # 6. Docker security (if running in Docker)
 echo ""
 echo "--- Docker Security ---"
-if command -v docker &>/dev/null; then
+if [[ "$SKIP_DOCKER" == "1" ]]; then
+  info "Docker checks skipped (--skip-docker)"
+elif command -v docker &>/dev/null; then
   if docker ps --filter name=mission-control --format '{{.Names}}' 2>/dev/null | grep -q mission-control; then
     ro=$(docker inspect mission-control --format '{{.HostConfig.ReadonlyRootfs}}' 2>/dev/null || echo "false")
     if [[ "$ro" == "true" ]]; then
