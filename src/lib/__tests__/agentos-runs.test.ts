@@ -7,8 +7,11 @@ import {
   listAgentOSRuns,
   listRecentRunsForAgent,
   retryAgentOSRun,
+  runHoldDetails,
   runHoldReason,
 } from '@/lib/agentos-runs'
+import { useRunEventPulse } from '@/lib/use-run-events'
+import { act, renderHook } from '@testing-library/react'
 
 const state = vi.hoisted(() => ({
   db: null as InstanceType<typeof Database> | null,
@@ -565,6 +568,21 @@ describe('runHoldReason', () => {
     expect(reason).toContain('402')
   })
 
+  it('exposes stable machine-readable holdCodes so the UI can offer the right next action', () => {
+    expect(runHoldDetails({ ...base, state: 'HELD' }, { commandStateOf: () => 'paused' }).code).toBe('project_paused')
+    expect(runHoldDetails({ ...base, state: 'HELD' }, { planApprovalOf: () => ({ approvalRequired: true, hasApproval: false }) }).code).toBe('approval_required')
+    expect(runHoldDetails({ ...base, state: 'HELD' }, { planApprovalOf: () => ({ approvalRequired: true, hasApproval: true }) }).code).toBe('approval_stale')
+    expect(runHoldDetails({ ...base, state: 'FAILED', errorMessage: 'API Error: 402 insufficient balance' }).code).toBe('provider_402')
+    expect(runHoldDetails({ ...base, state: 'FAILED', errorMessage: 'connect ECONNREFUSED 127.0.0.1:47891' }).code).toBe('host_connection')
+    expect(runHoldDetails({ ...base, state: 'HELD' }, { commandStateOf: () => 'active', planApprovalOf: () => null }).code).toBe('queued_dispatch')
+  })
+
+  it('never classifies active or terminal states as held', () => {
+    for (const state of ['RUNNING', 'REVIEWING', 'COMPLETED', 'CANCELLED'] as const) {
+      expect(runHoldDetails({ ...base, state }).code).toBeNull()
+    }
+  })
+
   it('explains plain queued work as waiting for the next scheduler tick', () => {
     const reason = runHoldReason({ ...base, state: 'QUEUED' })
     expect(reason).toContain('Queued for dispatch')
@@ -583,6 +601,81 @@ describe('listAgentOSRuns hold-reason integration', () => {
     const run = runs.find(r => r.id === 'task:410')
     expect(run).toBeDefined()
     expect(run!.holdReason).toContain('Awaiting cost approval')
+  })
+
+  it('classifies held runs with a machine-readable holdCode and leaves terminal runs unclassified', () => {
+    const db = state.db!
+    insertObjective(db, 11, 1, 'Stale objective')
+    db.prepare('INSERT INTO agentos_execution_plans (objective_id, project_id, workspace_id, status, plan_json) VALUES (?, 1, 1, ?, ?)')
+      .run(11, 'AWAITING_APPROVAL', JSON.stringify({ summary: { approvalRequired: true } }))
+    insertTask(db, { id: 411, title: 'Stale mission', status: 'assigned', projectId: 1, metadata: missionMetadata(11), updatedAt: 6100 })
+    insertTask(db, { id: 900, title: 'Done mission', status: 'done', projectId: 1, updatedAt: 6300 })
+    insertDelegation(db, { id: 'del-900', taskId: 900, projectId: 1, routingAgentName: gamutAgent.name, status: 'completed', resultSummary: 'done', updatedAt: 6300, completedAt: 6300 })
+
+    const held = listAgentOSRuns({ workspaceId: 1, states: ['QUEUED'] }).runs.find(r => r.id === 'task:411')
+    expect(held).toBeDefined()
+    expect(held!.holdCode).toBe('approval_required')
+    expect(held!.holdReason).toContain('Awaiting cost approval')
+
+    // Terminal delegation truth: completed work is never misclassified as held.
+    const done = listAgentOSRuns({ workspaceId: 1, states: ['COMPLETED'] }).runs.find(r => r.id === 'del-900')
+    expect(done).toBeDefined()
+    expect(done!.holdCode).toBeNull()
+    expect(done!.holdReason).toBeNull()
+  })
+
+  it('preserves native run identity and keeps attempts distinct in the feed', () => {
+    const db = state.db!
+    insertTask(db, { id: 910, title: 'Attempted mission', status: 'done', projectId: 1, updatedAt: 7000 })
+    insertDelegation(db, { id: 'del-910-a', taskId: 910, projectId: 1, routingAgentName: hermesAgent.name, status: 'failed', nativeSessionId: 'sess-aaa', nativeRunId: 'run-aaa', attempt: 1, errorMessage: 'boom', updatedAt: 6900, completedAt: 6900 })
+    insertDelegation(db, { id: 'del-910-b', taskId: 910, projectId: 1, routingAgentName: hermesAgent.name, status: 'completed', nativeSessionId: 'sess-bbb', nativeRunId: 'run-bbb', attempt: 2, resultSummary: 'recovered', updatedAt: 7000, completedAt: 7000 })
+
+    const runs = listAgentOSRuns({ workspaceId: 1, states: ['FAILED', 'COMPLETED'] }).runs
+    const first = runs.find(r => r.id === 'del-910-a')
+    const second = runs.find(r => r.id === 'del-910-b')
+    expect(first!.attempt).toBe(1)
+    expect(first!.nativeSessionId).toBe('sess-aaa')
+    expect(first!.state).toBe('FAILED')
+    expect(second!.attempt).toBe(2)
+    expect(second!.nativeSessionId).toBe('sess-bbb')
+    expect(second!.resultSummary).toBe('recovered')
+  })
+})
+
+describe('useRunEventPulse (SSE refresh dedup)', () => {
+  it('debounces a burst of duplicate SSE events into a single refresh', () => {
+    vi.useFakeTimers()
+    try {
+      const refresh = vi.fn()
+      renderHook(() => useRunEventPulse(refresh, 250))
+      act(() => {
+        // At-least-once delivery: the same state change can arrive 3x.
+        window.dispatchEvent(new Event('mc:run-events'))
+        window.dispatchEvent(new Event('mc:run-events'))
+        window.dispatchEvent(new Event('mc:run-events'))
+      })
+      expect(refresh).not.toHaveBeenCalled()
+      act(() => { vi.advanceTimersByTime(300) })
+      expect(refresh).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops listening after unmount so duplicate late events cause no refresh', () => {
+    vi.useFakeTimers()
+    try {
+      const refresh = vi.fn()
+      const { unmount } = renderHook(() => useRunEventPulse(refresh, 50))
+      unmount()
+      act(() => {
+        window.dispatchEvent(new Event('mc:run-events'))
+        vi.advanceTimersByTime(100)
+      })
+      expect(refresh).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
