@@ -246,7 +246,7 @@ export function AgentOSOverviewPanel() {
             <QueueCard label="Approvals waiting" value={approvalsWaiting} tone={approvalsWaiting > 0 ? 'info' : 'neutral'} onClick={() => navigateToPanel('approvals')} />
             <QueueCard label="Active runs" value={runSummary.RUNNING || 0} tone={runSummary.RUNNING ? 'good' : 'neutral'} onClick={() => navigateToPanel('runs')} />
             <QueueCard label="Queued" value={runSummary.QUEUED || 0} tone={(runSummary.QUEUED || 0) > 0 ? 'info' : 'neutral'} onClick={() => navigateToPanel('runs')} />
-            <QueueCard label="Reviewing" value={runSummary.REVIEWING || 0} tone={(runSummary.REVIEWING || 0) > 0 ? 'info' : 'neutral'} onClick={() => navigateToPanel('runs')} />
+            <QueueCard label="Reviewing" value={runSummary.REVIEWING || 0} tone={(runSummary.REVIEWING || 0) > 0 ? 'info' : 'neutral'} onClick={() => navigateToPanel('reviews')} />
             <QueueCard label="Failed" value={runSummary.FAILED || 0} tone={(runSummary.FAILED || 0) > 0 ? 'bad' : 'neutral'} onClick={() => navigateToPanel('runs')} />
             <QueueCard
               label="Held / blocked"

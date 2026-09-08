@@ -22,6 +22,7 @@ import { OrchestrationBar } from '@/components/panels/orchestration-bar'
 import { AgentOSOverviewPanel } from '@/components/panels/agentos-overview-panel'
 import { AgentOSRunsPanel } from '@/components/panels/agentos-runs-panel'
 import { AgentOSApprovalsPanel } from '@/components/panels/agentos-approvals-panel'
+import { AgentOSReviewsPanel } from '@/components/panels/agentos-reviews-panel'
 import { NotificationsPanel } from '@/components/panels/notifications-panel'
 import { UserManagementPanel } from '@/components/panels/user-management-panel'
 import { AuditTrailPanel } from '@/components/panels/audit-trail-panel'
@@ -596,6 +597,8 @@ function ContentRouter({ tab }: { tab: string }) {
       return <AgentOSRunsPanel />
     case 'approvals':
       return <AgentOSApprovalsPanel />
+    case 'reviews':
+      return <AgentOSReviewsPanel />
     case 'command':
       return <ProjectCommandPanel />
     case 'notifications':

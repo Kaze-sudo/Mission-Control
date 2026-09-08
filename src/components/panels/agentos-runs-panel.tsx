@@ -452,6 +452,9 @@ export function AgentOSRunsPanel() {
                           {run.objectiveId !== null && (
                             <Button size="sm" variant="outline" onClick={() => navigateToProject(run.projectId!, run.objectiveId!)}>Review plan / approval</Button>
                           )}
+                          {run.state === 'REVIEWING' && (
+                            <Button size="sm" variant="outline" onClick={() => navigateToPanel('reviews')}>Open Review Queue</Button>
+                          )}
                           {cancellable(run) && (
                             <Button
                               size="sm"

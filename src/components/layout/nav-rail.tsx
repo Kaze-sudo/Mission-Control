@@ -38,6 +38,7 @@ const navGroups: NavGroup[] = [
       { id: 'tasks', label: 'Tasks', icon: <TasksIcon />, priority: true, essential: true },
       { id: 'runs', label: 'Runs', icon: <RunsIcon />, priority: false, essential: true },
       { id: 'approvals', label: 'Plan Approvals', icon: <ApprovalsIcon />, priority: false, essential: true },
+      { id: 'reviews', label: 'Review Queue', icon: <ApprovalsIcon />, priority: false, essential: true },
       { id: 'chat', label: 'Chat', icon: <ChatIcon />, priority: false, essential: true },
       { id: 'channels', label: 'Channels', icon: <ChannelsIcon />, priority: false },
       { id: 'skills', label: 'Skills', icon: <SkillsIcon />, priority: false },
