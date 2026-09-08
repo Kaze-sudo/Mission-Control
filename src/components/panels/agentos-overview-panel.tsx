@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import { apiFetch } from '@/lib/api-client'
 import { useNavigateToPanel, useNavigateToProjectCommand } from '@/lib/navigation'
 import { useSmartPoll } from '@/lib/use-smart-poll'
+import { useRunEventPulse } from '@/lib/use-run-events'
 
 /**
  * AgentOS System Status — the command-layer readout on the Overview page.
@@ -183,6 +184,10 @@ export function AgentOSOverviewPanel() {
   }, [])
 
   useSmartPoll(refresh, 30_000)
+  // The SSE stream is live-only (no replay): state changed while disconnected
+  // is gone from the stream, so converge immediately on reconnect instead of
+  // waiting for the next 30s poll tick.
+  useRunEventPulse(refresh, 60_000)
 
   if (!loaded && !status) return null
   if (!status) {

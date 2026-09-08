@@ -54,8 +54,18 @@ export function useServerEvents() {
 
       es.onopen = () => {
         if (!mounted) return
+        const wasDisconnected = sseReconnectAttemptsRef.current > 0
         sseReconnectAttemptsRef.current = 0
         setConnection({ sseConnected: true })
+        // The SSE stream is live-only (at-least-once, no replay): every event
+        // emitted while the connection was down is gone forever. Canonical
+        // backend state is the only authority, so a reconnect must trigger an
+        // immediate convergence refresh in every live operator surface (Runs,
+        // Approval Center, Review Queue, Overview) instead of letting them sit
+        // on stale data until their next poll tick (5–30s).
+        if (wasDisconnected) {
+          window.dispatchEvent(new CustomEvent('mc:sse-reconnected'))
+        }
       }
 
       es.onmessage = (event) => {

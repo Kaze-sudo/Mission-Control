@@ -677,6 +677,44 @@ describe('useRunEventPulse (SSE refresh dedup)', () => {
       vi.useRealTimers()
     }
   })
+
+  it('converges immediately on SSE reconnect — no debounce wait, because missed events have no replay', () => {
+    vi.useFakeTimers()
+    try {
+      const refresh = vi.fn()
+      renderHook(() => useRunEventPulse(refresh, 250))
+      act(() => {
+        window.dispatchEvent(new Event('mc:sse-reconnected'))
+      })
+      // Fires synchronously on reconnect, before any debounce window elapses.
+      expect(refresh).toHaveBeenCalledTimes(1)
+      act(() => { vi.advanceTimersByTime(500) })
+      expect(refresh).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('collapses a reconnect plus a duplicate event burst into exactly two refreshes', () => {
+    vi.useFakeTimers()
+    try {
+      const refresh = vi.fn()
+      renderHook(() => useRunEventPulse(refresh, 250))
+      act(() => {
+        // Reconnect convergence, then a burst of duplicate live events
+        // arriving right after the stream reopens (at-least-once delivery).
+        window.dispatchEvent(new Event('mc:sse-reconnected'))
+        window.dispatchEvent(new Event('mc:run-events'))
+        window.dispatchEvent(new Event('mc:run-events'))
+        window.dispatchEvent(new Event('mc:run-events'))
+      })
+      expect(refresh).toHaveBeenCalledTimes(1) // immediate reconnect refresh
+      act(() => { vi.advanceTimersByTime(300) })
+      expect(refresh).toHaveBeenCalledTimes(2) // burst collapsed to one refresh
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('listRecentRunsForAgent', () => {
