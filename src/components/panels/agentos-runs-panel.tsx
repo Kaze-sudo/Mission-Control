@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { ApiError, apiFetch } from '@/lib/api-client'
 import { useSmartPoll } from '@/lib/use-smart-poll'
-import { useNavigateToProjectCommand } from '@/lib/navigation'
+import { useNavigateToPanel, useNavigateToProjectCommand } from '@/lib/navigation'
 import { useRunEventPulse } from '@/lib/use-run-events'
 import { useMissionControl } from '@/store'
 
@@ -40,6 +40,7 @@ interface AgentOSRun {
   completedAt: number | null
   durationSeconds: number | null
   holdReason: string | null
+  holdCode?: string | null
 }
 
 interface RunsResponse {
@@ -95,8 +96,31 @@ const ERROR_CLASS_LABELS: Record<string, string> = {
   dispatch_rejected: 'Dispatch rejected / no candidate',
 }
 
+/**
+ * Phase 9: distinct, human explanation + real next action per machine-readable
+ * hold code (shared read model `holdCode` from /api/agentos/runs). Blocked work
+ * is never collapsed into a generic error, and every next action deep-links to
+ * the surface that can actually resolve it.
+ */
+const HOLD_META: Record<string, { label: string; chip: string; next?: { label: string; kind: 'approvals' | 'command' } }> = {
+  project_paused: { label: 'Project paused', chip: 'bg-amber-500/15 text-amber-300 border-amber-500/40', next: { label: 'Resume in Project Command', kind: 'command' } },
+  project_blocked: { label: 'Project blocked', chip: 'bg-rose-500/15 text-rose-300 border-rose-500/40', next: { label: 'Resolve in Project Command', kind: 'command' } },
+  project_inactive: { label: 'Project not activated', chip: 'bg-amber-500/15 text-amber-300 border-amber-500/40', next: { label: 'Activate in Project Command', kind: 'command' } },
+  policy_concurrency: { label: 'Concurrency limit', chip: 'bg-violet-500/15 text-violet-300 border-violet-500/40' },
+  approval_required: { label: 'Approval required', chip: 'bg-sky-500/15 text-sky-300 border-sky-500/40', next: { label: 'Approve plan', kind: 'approvals' } },
+  approval_stale: { label: 'Approval stale', chip: 'bg-amber-500/15 text-amber-300 border-amber-500/40', next: { label: 'Re-approve plan', kind: 'approvals' } },
+  provider_402: { label: 'Provider 402 — insufficient balance', chip: 'bg-rose-500/15 text-rose-300 border-rose-500/40' },
+  provider_auth: { label: 'Provider auth failure', chip: 'bg-rose-500/15 text-rose-300 border-rose-500/40' },
+  timeout: { label: 'Timed out', chip: 'bg-rose-500/15 text-rose-300 border-rose-500/40' },
+  host_connection: { label: 'Host connection failure', chip: 'bg-rose-500/15 text-rose-300 border-rose-500/40' },
+  model_unavailable: { label: 'Model unavailable', chip: 'bg-orange-500/15 text-orange-300 border-orange-500/40' },
+  dispatch_rejected: { label: 'Dispatch rejected', chip: 'bg-orange-500/15 text-orange-300 border-orange-500/40' },
+  queued_dispatch: { label: 'Queued for dispatch', chip: 'bg-slate-500/15 text-slate-300 border-slate-500/30' },
+}
+
 export function AgentOSRunsPanel() {
   const navigateToProject = useNavigateToProjectCommand()
+  const navigateToPanel = useNavigateToPanel()
   const { currentUser } = useMissionControl()
   const [runs, setRuns] = useState<AgentOSRun[]>([])
   const [summary, setSummary] = useState<{ total: number; byState: Partial<Record<RunState, number>> } | null>(null)
@@ -395,7 +419,31 @@ export function AgentOSRunsPanel() {
                         <Field label="Created" value={fmtEpoch(run.createdAt)} />
                         <Field label="Updated" value={fmtEpoch(run.updatedAt)} />
                         <Field label="Completed" value={fmtEpoch(run.completedAt)} />
-                        {run.holdReason && <div className="sm:col-span-2 xl:col-span-3"><Field label="Why held / queued" value={run.holdReason} /></div>}
+                        {run.holdReason && (
+                          <div className="sm:col-span-2 xl:col-span-3">
+                            <div className="flex flex-wrap items-center gap-2 mb-1">
+                              {run.holdCode && HOLD_META[run.holdCode] && (
+                                <span className={`rounded border px-1.5 py-0.5 text-[10px] font-semibold ${HOLD_META[run.holdCode].chip}`}>
+                                  {HOLD_META[run.holdCode].label}
+                                </span>
+                              )}
+                              {run.holdCode && HOLD_META[run.holdCode]?.next && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => {
+                                    const kind = HOLD_META[run.holdCode!].next!.kind
+                                    if (kind === 'approvals') navigateToPanel('approvals')
+                                    else if (run.projectId !== null) navigateToProject(run.projectId, run.objectiveId ?? undefined)
+                                  }}
+                                >
+                                  {HOLD_META[run.holdCode].next!.label}
+                                </Button>
+                              )}
+                            </div>
+                            <Field label="Why held / queued" value={run.holdReason} />
+                          </div>
+                        )}
                       </div>
 
                       {run.projectId !== null && (

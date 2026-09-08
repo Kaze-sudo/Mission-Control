@@ -86,6 +86,13 @@ export interface AgentOSRun {
   durationSeconds: number | null
   /** Why a non-running, non-terminal run is not executing (real-state derived). */
   holdReason: string | null
+  /** Machine-readable classification of `holdReason` (Phase 9 read model).
+   *  One of: project_paused, project_blocked, project_inactive,
+   *  policy_concurrency, approval_required, approval_stale, provider_402,
+   *  provider_auth, timeout, host_connection, model_unavailable,
+   *  dispatch_rejected, queued_dispatch. The UI maps these to distinct
+   *  explanations + next actions instead of collapsing into a generic error. */
+  holdCode: string | null
 }
 
 export interface AgentOSRunSummary {
@@ -215,6 +222,7 @@ function toDelegationRun(
     completedAt,
     durationSeconds: durationSeconds(createdAt, completedAt),
     holdReason: null,
+  holdCode: null,
   }
 }
 
@@ -258,6 +266,7 @@ function toQueuedTaskRun(
     completedAt: null,
     durationSeconds: null,
     holdReason: null,
+  holdCode: null,
   }
 }
 
@@ -413,7 +422,7 @@ export function listAgentOSRuns(input: {
   // Attach real-state hold reasons (why each non-running run is not executing).
   const holdContext = buildRunHoldContext(workspaceId, runs)
   for (const run of runs) {
-    run.holdReason = runHoldReason({
+    const hold = runHoldDetails({
       state: run.state,
       workspaceId,
       projectId: run.projectId,
@@ -422,6 +431,8 @@ export function listAgentOSRuns(input: {
       delegationStatus: run.delegationStatus,
       errorMessage: run.errorMessage,
     }, holdContext)
+    run.holdReason = hold.reason
+    run.holdCode = hold.code
   }
 
   let filtered = runs
@@ -466,36 +477,55 @@ export function runHoldReason(run: {
   delegationStatus: string | null | undefined
   errorMessage: string | null | undefined
 }, context: RunHoldContext = {}): string | null {
+  return runHoldDetails(run, context).reason
+}
+
+/**
+ * Same derivation as `runHoldReason`, additionally returning a machine-readable
+ * `holdCode` so operator surfaces can map each block to a distinct explanation
+ * and next action instead of collapsing everything into a generic error.
+ */
+export function runHoldDetails(run: {
+  state: AgentOSRunDisplayState
+  workspaceId: number
+  projectId: number | null
+  objectiveId: number | null
+  taskStatus: string | null | undefined
+  delegationStatus: string | null | undefined
+  errorMessage: string | null | undefined
+}, context: RunHoldContext = {}): { code: string | null; reason: string | null } {
   if (run.state === 'RUNNING' || run.state === 'REVIEWING' || run.state === 'RETRYING'
     || run.state === 'COMPLETED' || run.state === 'CANCELLED') {
-    return null
+    return { code: null, reason: null }
   }
   if (run.state === 'FAILED') {
     switch (classifyRunError(run.errorMessage)) {
-      case 'insufficient_balance': return 'Insufficient provider balance (HTTP 402) — the provider blocked this execution'
-      case 'authentication': return 'Provider authentication failure'
-      case 'timeout': return 'Execution timed out'
-      case 'host_connection': return 'Host connection failure'
-      case 'model_unavailable': return 'Model unavailable'
-      case 'dispatch_rejected': return 'Dispatch rejected — no eligible candidate at dispatch time'
-      default: return null
+      case 'insufficient_balance': return { code: 'provider_402', reason: 'Insufficient provider balance (HTTP 402) — the provider blocked this execution' }
+      case 'authentication': return { code: 'provider_auth', reason: 'Provider authentication failure' }
+      case 'timeout': return { code: 'timeout', reason: 'Execution timed out' }
+      case 'host_connection': return { code: 'host_connection', reason: 'Host connection failure' }
+      case 'model_unavailable': return { code: 'model_unavailable', reason: 'Model unavailable' }
+      case 'dispatch_rejected': return { code: 'dispatch_rejected', reason: 'Dispatch rejected — no eligible candidate at dispatch time' }
+      default: return { code: null, reason: null }
     }
   }
 
   const db = getDatabase()
   const reasons: string[] = []
+  let code: string | null = null
 
   if (run.projectId !== null) {
     const state = context.commandStateOf
       ? context.commandStateOf(run.projectId)
       : (() => { try { return getProjectCommand(run.projectId!, run.workspaceId).state } catch { return null } })()
-    if (state === 'paused') reasons.push('Project is paused — resume it in Project Command to allow dispatch')
-    else if (state === 'blocked') reasons.push('Project is blocked — resolve activation blockers in Project Command')
-    else if (state === 'draft' || state === 'ready') reasons.push(`Project command state is ${state} — activate the project to allow dispatch`)
+    if (state === 'paused') { reasons.push('Project is paused — resume it in Project Command to allow dispatch'); code = code ?? 'project_paused' }
+    else if (state === 'blocked') { reasons.push('Project is blocked — resolve activation blockers in Project Command'); code = code ?? 'project_blocked' }
+    else if (state === 'draft' || state === 'ready') { reasons.push(`Project command state is ${state} — activate the project to allow dispatch`); code = code ?? 'project_inactive' }
   }
 
   if (run.taskStatus === 'awaiting_owner') {
     reasons.push('Held by command policy — waiting behind concurrency / platoon limits')
+    code = code ?? 'policy_concurrency'
   }
 
   if (run.objectiveId !== null) {
@@ -526,13 +556,15 @@ export function runHoldReason(run: {
       reasons.push(planInfo.hasApproval
         ? 'Cost approval exists but the run is still held — the plan may be stale; refresh and re-approve in Project Command'
         : 'Awaiting cost approval — approve the exact execution plan in Project Command')
+      code = code ?? (planInfo.hasApproval ? 'approval_stale' : 'approval_required')
     }
   }
 
   if (reasons.length === 0 && (run.taskStatus === 'assigned' || run.taskStatus === 'inbox')) {
     reasons.push('Queued for dispatch — the next scheduler tick claims approved work')
+    code = code ?? 'queued_dispatch'
   }
-  return reasons.length > 0 ? reasons.join(' · ') : null
+  return { code: reasons.length > 0 ? code : null, reason: reasons.length > 0 ? reasons.join(' · ') : null }
 }
 
 /** Build per-project command state + per-objective plan/approval lookups once. */
@@ -945,7 +977,7 @@ export function listRecentRunsForAgent(input: {
 
   const holdContext = buildRunHoldContext(input.workspaceId, runs)
   for (const run of runs) {
-    run.holdReason = runHoldReason({
+    const hold = runHoldDetails({
       state: run.state,
       workspaceId: input.workspaceId,
       projectId: run.projectId,
@@ -954,6 +986,8 @@ export function listRecentRunsForAgent(input: {
       delegationStatus: run.delegationStatus,
       errorMessage: run.errorMessage,
     }, holdContext)
+    run.holdReason = hold.reason
+    run.holdCode = hold.code
   }
   return runs
 }
