@@ -21,6 +21,7 @@ import { StandupPanel } from '@/components/panels/standup-panel'
 import { OrchestrationBar } from '@/components/panels/orchestration-bar'
 import { AgentOSOverviewPanel } from '@/components/panels/agentos-overview-panel'
 import { AgentOSRunsPanel } from '@/components/panels/agentos-runs-panel'
+import { AgentOSApprovalsPanel } from '@/components/panels/agentos-approvals-panel'
 import { NotificationsPanel } from '@/components/panels/notifications-panel'
 import { UserManagementPanel } from '@/components/panels/user-management-panel'
 import { AuditTrailPanel } from '@/components/panels/audit-trail-panel'
@@ -593,6 +594,8 @@ function ContentRouter({ tab }: { tab: string }) {
       return <AgentRegistryPanel />
     case 'runs':
       return <AgentOSRunsPanel />
+    case 'approvals':
+      return <AgentOSApprovalsPanel />
     case 'command':
       return <ProjectCommandPanel />
     case 'notifications':
