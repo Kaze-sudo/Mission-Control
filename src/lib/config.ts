@@ -111,6 +111,7 @@ export const config = {
     process.env.OPENCLAW_SOUL_TEMPLATES_DIR ||
     (openclawStateDir ? path.join(openclawStateDir, 'templates', 'souls') : ''),
   homeDir: os.homedir(),
+  aiVaultRoot: (process.env.AGENTOS_AI_VAULT_ROOT || (process.platform === 'win32' ? 'D:\\AI' : path.join(os.homedir(), 'AI'))).trim(),
   // Optional coordinator agent for auto-routing unassigned tasks (issue #663).
   // Opt-in: empty string means the feature is OFF (tasks created without an
   // assignee stay unassigned). When set, new tasks with no assigned_to are

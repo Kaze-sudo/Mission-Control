@@ -16,18 +16,25 @@ import { parseJsonlTranscript, readSessionJsonl, type TranscriptMessage } from '
 import { syncTaskOutbound } from './github-sync-engine'
 import { classifyModelProvider, getDispatchModelId, getModelByAlias } from './models'
 import { getMiniMaxApiKey, resolveMiniMaxEndpoint } from './minimax'
+import { getPlatoonCommander } from './platoon-commanders'
+import { runGamutAgent } from './gamut-host'
+import { checkAgentOSDispatchGuard, mayAgentosLifecycleAdvance } from './project-command'
+import { promoteReadyObjectiveMissions, reconcileObjectiveStatuses } from './objective-planning'
+import { createDelegationForTask, getLatestDelegationForTask, updateDelegation } from './delegation-ledger'
+import { authorizeAgentOSTaskDispatch, missionMaximumExposure, reserveMissionCost, releaseReservationForTask } from './execution-authorization'
+import { isAgentOSGatedTask, objectiveIdFromTaskMetadata } from './execution-planning'
 import type Database from 'better-sqlite3'
 
 const AGENT_DISPATCH_ACCEPT_TIMEOUT_MS = 60_000
 
 /** Sync task to GitHub/GNAP and broadcast escalation if task failed */
-function syncAndEscalateIfFailed(task: { id: number; title: string; status: string; priority: string; project_id?: number | null; workspace_id: number; description?: string | null }, newStatus: string, errorMsg?: string, dispatchAttempts?: number): void {
+function syncAndEscalateIfFailed(task: { id: number; title: string; status: string; priority: string; project_id?: number | null; workspace_id: number; description?: string | null }, newStatus: string, errorMsg?: string, dispatchAttempts?: number, reasonOverride?: string): void {
   syncTaskOutbound({ ...task, status: newStatus }, task.workspace_id)
   if (newStatus === 'failed') {
     eventBus.broadcast('task.escalated', {
       id: task.id,
       title: task.title,
-      reason: errorMsg?.includes('Aegis rejected') ? 'max_aegis_rejections' : errorMsg?.includes('stuck') ? 'stale_task_max_retries' : 'max_dispatch_retries',
+      reason: reasonOverride ?? (errorMsg?.includes('Aegis rejected') ? 'max_aegis_rejections' : errorMsg?.includes('stuck') ? 'stale_task_max_retries' : 'max_dispatch_retries'),
       dispatch_attempts: dispatchAttempts ?? 0,
       error_message: (errorMsg ?? '').substring(0, 500),
       workspace_id: task.workspace_id,
@@ -46,11 +53,13 @@ interface DispatchableTask {
   agent_name: string
   agent_id: number
   agent_config: string | null
+  agent_source?: string | null
   /** From agents.runtime_type — 'claude' opts into per-agent CLI session dispatch (#602). */
   agent_runtime_type?: string | null
   ticket_prefix: string | null
   project_ticket_no: number | null
   project_id: number | null
+  dispatch_attempts?: number | null
   tags?: string[]
   /** Raw tasks.metadata JSON — carries optional per-task sandbox overrides. */
   metadata?: string | null
@@ -125,6 +134,30 @@ function resolveGatewayAgentId(task: DispatchableTask): string {
     } catch { /* ignore */ }
   }
   return task.agent_name
+}
+
+function resolveExternalAgentName(task: DispatchableTask): string {
+  if (task.agent_config) {
+    try {
+      const cfg = JSON.parse(task.agent_config)
+      const agentos = cfg.agentos && typeof cfg.agentos === 'object' ? cfg.agentos : null
+      if (agentos && typeof agentos.externalAgentName === 'string' && agentos.externalAgentName) {
+        return agentos.externalAgentName
+      }
+    } catch { /* ignore */ }
+  }
+  return task.agent_name
+}
+
+function resolveExternalAgentId(task: DispatchableTask): string | null {
+  if (!task.agent_config) return null
+  try {
+    const cfg = JSON.parse(task.agent_config)
+    const agentos = cfg.agentos && typeof cfg.agentos === 'object' ? cfg.agentos : null
+    return agentos && typeof agentos.externalAgentId === 'string' ? agentos.externalAgentId : null
+  } catch {
+    return null
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -265,6 +298,36 @@ export function resolveCliSandboxOptions(
   }
 }
 
+/**
+ * Phase 4 — render the AgentOS Preferred Resources block for a specialist prompt.
+ * Rules: resources are preferred (not mandatory); inaccessible paths must not be
+ * claimed as used; access limitations must be reported; manual-only/reference
+ * resources are never used automatically.
+ */
+export function buildAgentosResourcesPromptSection(resources: unknown[]): string {
+  const valid: Array<Record<string, unknown>> = []
+  for (const resource of Array.isArray(resources) ? resources : []) {
+    if (!resource || typeof resource !== 'object') continue
+    valid.push(resource as Record<string, unknown>)
+  }
+  if (valid.length === 0) return ''
+  const lines = [
+    '## AgentOS Preferred Resources',
+    'These are the best approved shared resources AgentOS ranked for this mission.',
+    '- Use them when relevant and accessible.',
+    '- Do NOT claim to have used a resource your runtime cannot access — continue safely and report the access limitation.',
+    '- Do NOT automatically use manual-only or reference resources unless an operator explicitly selected them.',
+  ]
+  for (const resource of valid.slice(0, 6)) {
+    const name = typeof resource.name === 'string' ? resource.name : 'resource'
+    const resourcePath = typeof resource.path === 'string' ? resource.path : ''
+    const score = typeof resource.score === 'number' ? resource.score : null
+    const caps = Array.isArray(resource.capabilities) ? resource.capabilities.filter((value: unknown) => typeof value === 'string') : []
+    lines.push('- ' + name + (score !== null ? ' (' + score + '/100)' : '') + (caps.length ? ' — ' + caps.join(', ') : '') + (resourcePath ? ' — ' + resourcePath : ''))
+  }
+  return lines.join('\n')
+}
+
 function buildTaskPrompt(task: DispatchableTask, rejectionFeedback?: string | null): string {
   const ticket = task.ticket_prefix && task.project_ticket_no
     ? `${task.ticket_prefix}-${String(task.project_ticket_no).padStart(3, '0')}`
@@ -283,6 +346,14 @@ function buildTaskPrompt(task: DispatchableTask, rejectionFeedback?: string | nu
 
   if (task.description) {
     lines.push('', task.description)
+  }
+
+  const metadata = safeParseMetadata(task.metadata)
+  const resourceSection = buildAgentosResourcesPromptSection(
+    Array.isArray(metadata.agentos_resources) ? metadata.agentos_resources : []
+  )
+  if (resourceSection) {
+    lines.push('', resourceSection)
   }
 
   if (rejectionFeedback) {
@@ -620,6 +691,17 @@ export async function reconcileDeferredTaskCompletions(options: {
       task.workspace_id
     )
 
+    const delegation = getLatestDelegationForTask(task.id, task.workspace_id)
+    if (delegation) {
+      updateDelegation(delegation.id, task.workspace_id, {
+        status: 'completed',
+        nativeSessionId: typeof nextMetadata.dispatch_session_id === 'string' ? nextMetadata.dispatch_session_id : null,
+        nativeRunId: typeof nextMetadata.dispatch_run_id === 'string' ? nextMetadata.dispatch_run_id : null,
+        resultSummary: truncated,
+        completed: true,
+      })
+    }
+
     promoted++
   }
 
@@ -952,6 +1034,19 @@ function getCodexCliBinaryPath(): string | null {
       codexCliBinaryPath = 'codex'
       return 'codex'
     }
+
+    if (process.platform === 'win32') {
+      const os = require('node:os')
+      const bundled = path.join(os.homedir(), '.codex', 'plugins', '.plugin-appserver', 'codex.exe')
+      if (existsSync(bundled)) {
+        const bundledResult = spawnSync(bundled, ['--version'], { stdio: 'ignore', timeout: 5000 })
+        if (bundledResult.status === 0) {
+          codexCliBinaryPath = bundled
+          return bundled
+        }
+      }
+    }
+
     codexCliBinaryPath = false
     return null
   } catch {
@@ -1360,6 +1455,99 @@ async function callCodexViaCli(
   })
 }
 
+
+async function callGamutViaHost(task: DispatchableTask, prompt: string): Promise<AgentResponseParsed> {
+  const commander = getPlatoonCommander('gamut')
+  if (!commander) throw new Error('Gamut platoon commander adapter is unavailable')
+  if (commander.blocked || !commander.commanderAvailable) {
+    throw new Error(commander.blockReason || 'Gamut platoon dispatch is unavailable')
+  }
+
+  const externalId = resolveExternalAgentId(task)
+  const prefix = 'pc:gamut:'
+  const slug = externalId?.startsWith(prefix) ? externalId.slice(prefix.length) : null
+  if (!slug) throw new Error('Gamut routing proxy is missing its native agent slug')
+  const descriptor = commander.agents.find(agent => agent.id === `gamut:${slug}`)
+  if (!descriptor) throw new Error(`Gamut agent ${slug} is not currently discoverable`)
+
+  logger.info({ taskId: task.id, agent: descriptor.name, gamutSlug: slug }, 'Dispatching task through Gamut host API')
+  const result = await runGamutAgent({ slug, message: prompt, timeoutMs: 300_000 })
+  if (result.failed) {
+    // Provider/API execution failure (e.g. OpenRouter 402 insufficient
+    // balance): the native session ended but produced no usable model output.
+    // This must NOT enter the success/review path as authored output.
+    // Non-retryable: automatic retries cannot fix a provider prerequisite
+    // failure (exhausted balance, auth, unavailable model) and would only
+    // spawn repeated failed sessions.
+    const failure = new Error(
+      result.text || `Gamut provider execution failed${result.errorCode ? ` (${result.errorCode})` : ''}`,
+    )
+    ;(failure as Error & { nonRetryable?: boolean; nativeSessionId?: string }).nonRetryable = true
+    ;(failure as Error & { nonRetryable?: boolean; nativeSessionId?: string }).nativeSessionId = result.sessionId
+    throw failure
+  }
+  return { text: result.text, sessionId: result.sessionId }
+}
+async function callHermesViaProfile(
+  task: DispatchableTask,
+  prompt: string,
+): Promise<AgentResponseParsed> {
+  const commander = getPlatoonCommander('hermes')
+  if (!commander) throw new Error('Hermes platoon commander adapter is unavailable')
+  if (commander.blocked || !commander.commanderAvailable) {
+    throw new Error('Hermes platoon dispatch is blocked by the orchestrator safety stop')
+  }
+
+  const externalAgentName = resolveExternalAgentName(task)
+  const profile = commander.agents.find(agent => agent.name.toLowerCase() === externalAgentName.toLowerCase())
+  if (!profile) throw new Error(`Hermes profile not found for agent ${externalAgentName}`)
+
+  if (prompt.length > 24_000) {
+    throw new Error('Hermes one-shot prompt exceeds the safe Windows command-line budget')
+  }
+
+  const sandbox = resolveCliSandboxOptions(task)
+  const args = ['-p', profile.name, '-z', prompt]
+  if (sandbox.cwd) args.push('--in', sandbox.cwd)
+
+  logger.info(
+    { taskId: task.id, agent: task.agent_name, profile: profile.name, ...(sandbox.cwd ? { cwd: sandbox.cwd } : {}) },
+    'Dispatching task via Hermes profile',
+  )
+
+  return await new Promise<AgentResponseParsed>((resolve, reject) => {
+    const proc = spawn(process.env.HERMES_BIN || 'hermes', args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env },
+      ...(sandbox.cwd ? { cwd: sandbox.cwd } : {}),
+    })
+    let stdout = ''
+    let stderr = ''
+    const maxBytes = 1_000_000
+    const timeoutMs = 300_000
+    const timer = setTimeout(() => {
+      proc.kill('SIGTERM')
+      reject(new Error(`Hermes CLI timed out after ${timeoutMs / 1000}s`))
+    }, timeoutMs)
+
+    proc.stdout.on('data', (chunk) => {
+      if (stdout.length < maxBytes) stdout += chunk.toString().slice(0, maxBytes - stdout.length)
+    })
+    proc.stderr.on('data', (chunk) => {
+      if (stderr.length < maxBytes) stderr += chunk.toString().slice(0, maxBytes - stderr.length)
+    })
+    proc.on('error', (err) => { clearTimeout(timer); reject(err) })
+    proc.on('close', (code) => {
+      clearTimeout(timer)
+      const text = stdout.trim()
+      if (code !== 0 && !text) {
+        return reject(new Error(`Hermes CLI exited ${code}: ${stderr.slice(0, 500)}`))
+      }
+      resolve({ text: text || null, sessionId: null })
+    })
+  })
+}
+
 async function callLocalDirectly(task: DispatchableTask, prompt: string, model: string): Promise<AgentResponseParsed> {
   const endpoint = getLocalEndpoint()
   if (!endpoint) throw new Error('LOCAL_LLM_ENDPOINT not set — cannot dispatch to local model')
@@ -1477,6 +1665,25 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
   const results: Array<{ id: number; verdict: string; error?: string }> = []
 
   for (const task of tasks) {
+    // AgentOS Project Command gate: a paused (or otherwise non-active)
+    // AgentOS-managed project must not have completed work automatically
+    // advanced through quality review. Generic Mission Control tasks (no
+    // agentos_project_command record) are unaffected.
+    const lifecycleGate = mayAgentosLifecycleAdvance({ projectId: task.project_id, workspaceId: task.workspace_id })
+    if (!lifecycleGate.allowed) {
+      db_helpers.logActivity(
+        'agentos_aegis_held',
+        'task',
+        task.id,
+        'agentos',
+        `Aegis held review: ${lifecycleGate.reason}`,
+        { project_id: task.project_id, state: lifecycleGate.state },
+        task.workspace_id
+      )
+      results.push({ id: task.id, verdict: 'held' })
+      continue
+    }
+
     // Move to quality_review to prevent re-processing
     db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND workspace_id = ?')
       .run('quality_review', Math.floor(Date.now() / 1000), task.id, task.workspace_id)
@@ -1530,6 +1737,28 @@ export async function runAegisReviews(): Promise<{ ok: boolean; message: string 
       }
 
       const verdict = parseReviewVerdict(agentResponse.text)
+
+      // Re-check Project Command before applying any verdict: the project may
+      // have been paused while the review agent was running. A paused
+      // AgentOS-managed project must not advance to done/reassigned
+      // automatically, so hold the verdict and leave the task pending for a
+      // future pass (no quality_reviews record is written for a held review).
+      const applyGate = mayAgentosLifecycleAdvance({ projectId: task.project_id, workspaceId: task.workspace_id })
+      if (!applyGate.allowed) {
+        db.prepare('UPDATE tasks SET status = ?, updated_at = ? WHERE id = ? AND workspace_id = ?')
+          .run('review', Math.floor(Date.now() / 1000), task.id, task.workspace_id)
+        db_helpers.logActivity(
+          'agentos_aegis_held',
+          'task',
+          task.id,
+          'agentos',
+          `Aegis verdict held: ${applyGate.reason}`,
+          { project_id: task.project_id, state: applyGate.state },
+          task.workspace_id
+        )
+        results.push({ id: task.id, verdict: 'held' })
+        continue
+      }
 
       // Insert quality review record
       db.prepare(`
@@ -1725,12 +1954,34 @@ export async function requeueStaleTasks(): Promise<{ ok: boolean; message: strin
   }
 }
 
+/**
+ * True when a dispatch failure is terminal: the retry budget is exhausted, or
+ * the failure is explicitly non-retryable (provider/API prerequisite failure
+ * such as exhausted credit, auth failure, or an unavailable model — automatic
+ * retries cannot fix these and would only spawn repeated failed native
+ * sessions). Non-retryable failures are terminal from the very first attempt.
+ */
+export function dispatchFailureIsTerminal(input: {
+  currentAttempts: number
+  maxDispatchRetries?: number
+  nonRetryable?: boolean
+}): boolean {
+  const max = input.maxDispatchRetries ?? 5
+  return input.currentAttempts + 1 >= max || input.nonRetryable === true
+}
+
 export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: string }> {
   const db = getDatabase()
 
+  // Unlock dependency-gated objective missions before selecting assigned work.
+  // Newly ready missions route through the normal project/specialist selector,
+  // then still pass the AgentOS project-command guard below before execution.
+  promoteReadyObjectiveMissions()
+  reconcileObjectiveStatuses()
+
   const tasks = db.prepare(`
     SELECT t.*, a.name as agent_name, a.id as agent_id, a.config as agent_config,
-           a.runtime_type as agent_runtime_type,
+           a.source as agent_source, a.runtime_type as agent_runtime_type,
            p.ticket_prefix, t.project_ticket_no
     FROM tasks t
     JOIN agents a ON a.name = t.assigned_to AND a.workspace_id = t.workspace_id
@@ -1760,6 +2011,50 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
   const now = Math.floor(Date.now() / 1000)
 
   for (const task of tasks) {
+    if (task.agent_source === 'agentos-external') {
+      const platoonId = String(task.agent_runtime_type || '').toLowerCase()
+      const guard = checkAgentOSDispatchGuard({
+        projectId: task.project_id,
+        workspaceId: task.workspace_id,
+        routingAgentName: task.agent_name,
+        platoonId,
+      })
+      if (!guard.allowed) {
+        logger.info({ taskId: task.id, platoonId, guard }, 'AgentOS dispatch held by project command guard')
+        db_helpers.logActivity(
+          'agentos_dispatch_held', 'task', task.id, 'agentos',
+          `AgentOS held dispatch: ${guard.reason || 'project command guard blocked dispatch'}`,
+          { platoon_id: platoonId, counts: guard.counts, limits: guard.limits, state: guard.state },
+          task.workspace_id,
+        )
+        continue
+      }
+    }
+    // Execution authorization guard (Phase 9): FREE_LOCAL missions allowed by
+    // project policy pass through; PAID / UNKNOWN-cost AgentOS work requires a
+    // valid approval bound to the current execution-plan snapshot. Held tasks
+    // stay 'assigned' — they are never claimed and never reach a native
+    // runtime. The hold is activity-logged by the authorization module.
+    const executionAuth = authorizeAgentOSTaskDispatch({
+      id: task.id,
+      project_id: task.project_id ?? null,
+      workspace_id: task.workspace_id,
+      assigned_to: task.assigned_to || null,
+      metadata: task.metadata ?? null,
+    })
+    if (!executionAuth.allowed) {
+      logger.info({ taskId: task.id, reason: executionAuth.reason, costClass: executionAuth.costClass }, 'AgentOS dispatch held by execution authorization')
+      continue
+    }
+    if (isAgentOSGatedTask(task.metadata)) {
+      db_helpers.logActivity(
+        'execution_started', 'task', task.id, 'agentos',
+        `Execution authorized and starting for task ${task.id} (${executionAuth.costClass || 'free'})`,
+        { objective_id: objectiveIdFromTaskMetadata(task.metadata), cost_class: executionAuth.costClass || 'FREE_LOCAL', approval_id: executionAuth.approvalId },
+        task.workspace_id,
+      )
+    }
+
     // Atomically claim the task: only flip to in_progress if it is still
     // 'assigned'. If two dispatchers race (e.g. concurrent scheduler ticks or
     // multiple workers polling), exactly one UPDATE reports changes=1 and the
@@ -1791,7 +2086,45 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
       task.workspace_id
     )
 
+    let delegationId: string | null = null
+
     try {
+      if (task.agent_source === 'agentos-external') {
+        const delegation = createDelegationForTask({
+          taskId: task.id,
+          projectId: task.project_id,
+          workspaceId: task.workspace_id,
+          routingAgentName: task.agent_name,
+          runtimeType: task.agent_runtime_type,
+          metadata: task.metadata,
+          attempt: (task.dispatch_attempts || 0) + 1,
+        })
+        delegationId = delegation.id
+
+        // Budget guard reservation (Phase 7): once a cost-bearing AgentOS
+        // mission is claimed, reserve its maximum authorized exposure so the
+        // objective budget tracks committed spend. Never breaks dispatch.
+        try {
+          const objectiveId = objectiveIdFromTaskMetadata(task.metadata)
+          if (objectiveId !== null && executionAuth.costClass && executionAuth.costClass !== 'FREE_LOCAL') {
+            const exposure = missionMaximumExposure(objectiveId, task.id, task.workspace_id, db)
+            if (exposure !== null && exposure > 0) {
+              reserveMissionCost({
+                objectiveId,
+                workspaceId: task.workspace_id,
+                taskId: task.id,
+                delegationId: delegation.id,
+                approvalId: executionAuth.approvalId ?? null,
+                amount: exposure,
+                note: 'reserved at dispatch claim (maximum mission exposure, retries included)',
+              }, db)
+            }
+          }
+        } catch {
+          // Reservation must never block dispatch.
+        }
+      }
+
       // Check for previous Aegis rejection feedback
       const rejectionRow = db.prepare(`
         SELECT content FROM comments
@@ -1823,6 +2156,19 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         // and callDirectly — a claude-runtime agent never falls back to a
         // less restrictive provider; failures surface as dispatch failures.
         agentResponse = await dispatchViaClaudeSession(task, prompt)
+      } else if (String(task.agent_runtime_type || '').toLowerCase() === 'hermes') {
+        // AgentOS platoon dispatch: route only through a discovered Hermes profile.
+        // The platoon-level ESTOP is checked inside callHermesViaProfile and blocks
+        // all dispatch while the orchestrator safety stop is active.
+        agentResponse = await callHermesViaProfile(task, prompt)
+      } else if (String(task.agent_runtime_type || '').toLowerCase() === 'codex') {
+        // AgentOS Codex platoon dispatch uses the authenticated host Codex CLI.
+        // The routing proxy supplies project-scoped cwd through the existing sandbox resolver.
+        agentResponse = await callCodexViaCli(task, prompt, '')
+      } else if (String(task.agent_runtime_type || '').toLowerCase() === 'gamut') {
+        // Gamut dispatch goes through the desktop host's official local API.
+        // The host owns container startup, native agent policy, and session lifecycle.
+        agentResponse = await callGamutViaHost(task, prompt)
       } else if (useDirectApi && !targetSession) {
         // Direct API dispatch — provider chosen by `dispatchModel`. No gateway needed.
         agentResponse = await callDirectly(task, prompt)
@@ -1885,6 +2231,13 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
           { dispatch_session_id: targetSession, dispatch_run_id: pendingMeta.dispatch_run_id, async_state: asyncState },
           task.workspace_id
         )
+        if (delegationId) {
+          updateDelegation(delegationId, task.workspace_id, {
+            status: dispatchRunId ? 'pending' : 'accepted',
+            nativeSessionId: targetSession,
+            nativeRunId: dispatchRunId,
+          })
+        }
 
         results.push({ id: task.id, success: true })
         continue
@@ -1955,6 +2308,13 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
           { dispatch_session_id: dispatchSessionId, dispatch_run_id: pendingMeta.dispatch_run_id, async_state: asyncState },
           task.workspace_id
         )
+        if (delegationId) {
+          updateDelegation(delegationId, task.workspace_id, {
+            status: dispatchRunId ? 'pending' : 'accepted',
+            nativeSessionId: dispatchSessionId,
+            nativeRunId: dispatchRunId,
+          })
+        }
 
         results.push({ id: task.id, success: true })
         continue
@@ -2023,6 +2383,14 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         { response_length: agentResponse.text.length, dispatch_session_id: agentResponse.sessionId },
         task.workspace_id
       )
+      if (delegationId) {
+        updateDelegation(delegationId, task.workspace_id, {
+          status: 'completed',
+          nativeSessionId: agentResponse.sessionId,
+          resultSummary: truncated,
+          completed: true,
+        })
+      }
 
       results.push({ id: task.id, success: true })
       logger.info({ taskId: task.id, agent: task.agent_name }, 'Task dispatched and completed')
@@ -2035,10 +2403,32 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         .get(task.id, task.workspace_id) as { dispatch_attempts: number } | undefined)?.dispatch_attempts ?? 0
       const newAttempts = currentAttempts + 1
       const maxDispatchRetries = 5
+      // Non-retryable provider/API execution failures (exhausted credit, auth
+      // failure, unavailable model) never auto-retry — retries cannot fix them
+      // and would only spawn repeated failed native sessions.
+      const nonRetryable = (err as { nonRetryable?: boolean }).nonRetryable === true
 
-      if (newAttempts >= maxDispatchRetries) {
-        const failureMessage = `Dispatch failed ${newAttempts} times. Last: ${errorMsg.substring(0, 5000)}`
-        // Too many failures — move to failed
+      if (dispatchFailureIsTerminal({ currentAttempts, maxDispatchRetries, nonRetryable })) {
+        // For a non-retryable provider failure the raw diagnostic IS the truth
+        // (e.g. "API Error: 402 Workspace has insufficient balance"); do not
+        // rewrite it into a misleading "Dispatch failed N times" summary.
+        const failureMessage = nonRetryable
+          ? errorMsg.substring(0, 5000)
+          : `Dispatch failed ${newAttempts} times. Last: ${errorMsg.substring(0, 5000)}`
+        if (delegationId) {
+          // Preserve the native session id + provider diagnostic on the failed
+          // delegation as the historical execution record.
+          const nativeSessionId = typeof (err as { nativeSessionId?: unknown }).nativeSessionId === 'string'
+            ? (err as { nativeSessionId?: string }).nativeSessionId
+            : undefined
+          updateDelegation(delegationId, task.workspace_id, {
+            status: 'failed',
+            nativeSessionId,
+            errorMessage: failureMessage,
+            completed: true,
+          })
+        }
+        // Terminal execution failure — move to failed. Never review/completed.
         db.prepare('UPDATE tasks SET status = ?, error_message = ?, dispatch_attempts = ?, updated_at = ? WHERE id = ? AND workspace_id = ?')
           .run('failed', failureMessage, newAttempts, Math.floor(Date.now() / 1000), task.id, task.workspace_id)
 
@@ -2047,11 +2437,17 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
           status: 'failed',
           previous_status: 'in_progress',
           error_message: failureMessage,
-          reason: 'max_dispatch_retries_exceeded',
+          reason: nonRetryable ? 'non_retryable_dispatch_failure' : 'max_dispatch_retries_exceeded',
           workspace_id: task.workspace_id,
         })
-        syncAndEscalateIfFailed(task, 'failed', `Dispatch failed ${newAttempts} times`, newAttempts)
+        syncAndEscalateIfFailed(task, 'failed', failureMessage, newAttempts, nonRetryable ? 'non_retryable_dispatch_failure' : undefined)
       } else {
+        if (delegationId) {
+          updateDelegation(delegationId, task.workspace_id, {
+            status: 'retrying',
+            errorMessage: errorMsg.substring(0, 5000),
+          })
+        }
         // Revert to assigned so it can be retried on the next tick
         db.prepare('UPDATE tasks SET status = ?, error_message = ?, dispatch_attempts = ?, updated_at = ? WHERE id = ? AND workspace_id = ?')
           .run('assigned', errorMsg.substring(0, 5000), newAttempts, Math.floor(Date.now() / 1000), task.id, task.workspace_id)

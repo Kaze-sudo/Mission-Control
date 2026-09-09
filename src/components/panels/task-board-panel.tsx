@@ -84,6 +84,19 @@ interface Project {
   status: 'active' | 'archived'
 }
 
+interface AgentOSRoutingDecision {
+  id: number
+  status: string
+  requirements: Record<string, unknown>
+  candidates: Array<Record<string, unknown>>
+  selectedExternalAgentId: string | null
+  selectedPlatoonId: string | null
+  selectedRoutingAgentName: string | null
+  reason: string | null
+  actor: string | null
+  createdAt: number
+}
+
 interface MentionOption {
   handle: string
   recipient: string
@@ -1233,11 +1246,12 @@ function TaskDetailModal({
   const [broadcastMessage, setBroadcastMessage] = useState('')
   const [broadcastStatus, setBroadcastStatus] = useState<string | null>(null)
   const [reviews, setReviews] = useState<any[]>([])
+  const [routingDecisions, setRoutingDecisions] = useState<AgentOSRoutingDecision[]>([])
   const [reviewStatus, setReviewStatus] = useState<'approved' | 'rejected'>('approved')
   const [reviewNotes, setReviewNotes] = useState('')
   const [reviewError, setReviewError] = useState<string | null>(null)
   const mentionTargets = useMentionTargets()
-  const [activeTab, setActiveTab] = useState<'details' | 'comments' | 'quality' | 'session'>('details')
+  const [activeTab, setActiveTab] = useState<'details' | 'comments' | 'quality' | 'agentos' | 'session'>('details')
   const [reviewer, setReviewer] = useState('aegis')
 
   const fetchReviews = useCallback(async () => {
@@ -1246,6 +1260,15 @@ function TaskDetailModal({
       setReviews(data.reviews || [])
     } catch (error) {
       setReviewError('Failed to load quality reviews')
+    }
+  }, [task.id])
+
+  const fetchRoutingDecisions = useCallback(async () => {
+    try {
+      const data = await apiFetch<{ decisions?: AgentOSRoutingDecision[] }>(`/api/tasks/${task.id}/agentos-routing-history`)
+      setRoutingDecisions(data.decisions || [])
+    } catch {
+      setRoutingDecisions([])
     }
   }, [task.id])
 
@@ -1277,6 +1300,9 @@ function TaskDetailModal({
   useEffect(() => {
     fetchReviews()
   }, [fetchReviews])
+  useEffect(() => {
+    fetchRoutingDecisions()
+  }, [fetchRoutingDecisions])
 
   useSmartPoll(fetchComments, 15000)
 
@@ -1565,6 +1591,23 @@ function TaskDetailModal({
                 )}
               </button>
             ))}
+            {(routingDecisions.length > 0 || task.metadata?.agentos_routing) && (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'agentos'}
+                aria-controls="tabpanel-agentos"
+                onClick={() => setActiveTab('agentos')}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  activeTab === 'agentos'
+                    ? 'bg-secondary text-foreground'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-secondary/50'
+                }`}
+              >
+                AgentOS Routing
+                {routingDecisions.length > 0 && <span className="ml-1.5 text-[10px] text-muted-foreground/60">{routingDecisions.length}</span>}
+              </button>
+            )}
             {task.metadata?.dispatch_session_id && (
               <button
                 type="button"
@@ -1706,6 +1749,73 @@ function TaskDetailModal({
                   </Button>
                 </div>
               )}
+            </div>
+          )}
+
+          {activeTab === 'agentos' && (
+            <div id="tabpanel-agentos" role="tabpanel" aria-label="AgentOS Routing" className="space-y-3">
+              {routingDecisions.length === 0 ? (
+                <div className="rounded-lg border border-border/40 bg-secondary/20 p-3 text-xs text-muted-foreground">
+                  Routing metadata exists on this task, but no persisted decision receipt is available yet.
+                </div>
+              ) : routingDecisions.map((decision) => (
+                <div key={decision.id} className="rounded-lg border border-border/40 bg-secondary/20 p-3 space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-medium text-foreground">
+                        {decision.status === 'selected' ? 'Agent selected' : decision.status.replace(/_/g, ' ')}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground mt-0.5">{new Date(decision.createdAt * 1000).toLocaleString()}</div>
+                    </div>
+                    {decision.selectedPlatoonId && (
+                      <span className="text-[10px] px-2 py-1 rounded bg-primary/10 text-primary font-mono">{decision.selectedPlatoonId}</span>
+                    )}
+                  </div>
+                  {decision.selectedExternalAgentId && (
+                    <div className="text-xs">
+                      <span className="text-muted-foreground">Selected: </span>
+                      <span className="text-foreground font-mono">{decision.selectedExternalAgentId}</span>
+                    </div>
+                  )}
+                  {decision.reason && <div className="text-xs text-foreground/80">{decision.reason}</div>}
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Requirements</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {Object.entries(decision.requirements).flatMap(([key, value]) =>
+                        Array.isArray(value) ? value.map((item) => (
+                          <span key={`${decision.id}-${key}-${String(item)}`} className="text-[10px] rounded bg-secondary px-2 py-1 text-foreground/80">
+                            {key}: {String(item)}
+                          </span>
+                        )) : []
+                      )}
+                      {Object.values(decision.requirements).every(value => !Array.isArray(value) || value.length === 0) && (
+                        <span className="text-[10px] text-muted-foreground">No explicit capability constraints</span>
+                      )}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-1.5">Candidates</div>
+                    <div className="space-y-1.5">
+                      {decision.candidates.length === 0 ? (
+                        <div className="text-xs text-muted-foreground">No candidates were available.</div>
+                      ) : decision.candidates.map((candidate, index) => (
+                        <div key={`${decision.id}-candidate-${index}`} className="rounded border border-border/30 bg-card/50 px-2.5 py-2">
+                          <div className="flex items-center justify-between gap-2 text-xs">
+                            <span className="font-medium text-foreground">{String(candidate.name || candidate.externalAgentId || 'Agent')}</span>
+                            <span className="font-mono text-muted-foreground">{String(candidate.score ?? '—')}</span>
+                          </div>
+                          <div className="text-[10px] text-muted-foreground mt-0.5">
+                            {String(candidate.platoonId || 'unknown')} · {candidate.eligible ? 'eligible' : 'ineligible'}
+                          </div>
+                          {Array.isArray(candidate.reasons) && candidate.reasons.length > 0 && (
+                            <div className="text-[10px] text-foreground/70 mt-1">{candidate.reasons.map(String).join(' · ')}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
 
@@ -2114,6 +2224,10 @@ function CreateTaskModal({
   const t = useTranslations('taskBoard')
   const agentSessions = useAgentSessions(formData.assigned_to || undefined)
   const [isRecurring, setIsRecurring] = useState(false)
+  const [agentosAutoRoute, setAgentosAutoRoute] = useState(false)
+  const [agentosRequired, setAgentosRequired] = useState('')
+  const [agentosPreferred, setAgentosPreferred] = useState('')
+  const [agentosPlatoons, setAgentosPlatoons] = useState('')
   const [scheduleInput, setScheduleInput] = useState('')
   const [parsedSchedule, setParsedSchedule] = useState<{ cronExpr: string; humanReadable: string } | null>(null)
   const [scheduleError, setScheduleError] = useState('')
@@ -2158,6 +2272,16 @@ function CreateTaskModal({
     }
     if (formData.target_session) {
       metadata.target_session = formData.target_session
+    }
+    if (agentosAutoRoute && !formData.assigned_to) {
+      const csv = (value: string) => value.split(',').map(item => item.trim()).filter(Boolean)
+      metadata.agentos_auto_route = true
+      const required = csv(agentosRequired)
+      const preferred = csv(agentosPreferred)
+      const platoons = csv(agentosPlatoons)
+      if (required.length > 0) metadata.agentos_required_capabilities = required
+      if (preferred.length > 0) metadata.agentos_preferred_capabilities = preferred
+      if (platoons.length > 0) metadata.agentos_preferred_platoons = platoons
     }
 
     try {
@@ -2253,6 +2377,49 @@ function CreateTaskModal({
                   ))}
                 </select>
               </div>
+            </div>
+
+            <div className="border border-border rounded-md p-3 space-y-3">
+              <label className="flex items-start gap-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={agentosAutoRoute}
+                  onChange={(e) => {
+                    setAgentosAutoRoute(e.target.checked)
+                    if (e.target.checked) setFormData(prev => ({ ...prev, assigned_to: '', target_session: '' }))
+                  }}
+                  className="mt-0.5 rounded border-border"
+                />
+                <span>
+                  <span className="block text-sm text-foreground">AgentOS auto-route</span>
+                  <span className="block text-[11px] text-muted-foreground">Choose the best eligible bound agent. Leave capability fields blank and AgentOS will infer intent from the task title and description.</span>
+                </span>
+              </label>
+              {agentosAutoRoute && (
+                <div className="space-y-2">
+                  <input
+                    type="text"
+                    value={agentosRequired}
+                    onChange={(e) => setAgentosRequired(e.target.value)}
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm"
+                    placeholder="Required capabilities (optional — blank = infer)"
+                  />
+                  <input
+                    type="text"
+                    value={agentosPreferred}
+                    onChange={(e) => setAgentosPreferred(e.target.value)}
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm"
+                    placeholder="Preferred capabilities (optional — blank = infer)"
+                  />
+                  <input
+                    type="text"
+                    value={agentosPlatoons}
+                    onChange={(e) => setAgentosPlatoons(e.target.value)}
+                    className="w-full bg-surface-1 text-foreground border border-border rounded-md px-3 py-2 text-sm"
+                    placeholder="Preferred platoons: hermes, codex, openclaw, gamut"
+                  />
+                </div>
+              )}
             </div>
 
             <div>

@@ -290,8 +290,8 @@ describe('direct session API coverage', () => {
   })
 
   it('keeps scheduler routing, review, and heartbeat mutations workspace-scoped', () => {
-    const dispatch = readFileSync(join(process.cwd(), 'src/lib/task-dispatch.ts'), 'utf8')
-    const scheduler = readFileSync(join(process.cwd(), 'src/lib/scheduler.ts'), 'utf8')
+    const dispatch = readFileSync(join(process.cwd(), 'src/lib/task-dispatch.ts'), 'utf8').replace(/\r\n/g, '\n')
+    const scheduler = readFileSync(join(process.cwd(), 'src/lib/scheduler.ts'), 'utf8').replace(/\r\n/g, '\n')
 
     expect(dispatch).toContain("WHERE workspace_id = ?\n        AND hidden = 0")
     expect(dispatch).toContain("WHERE t.status = 'review'\n      AND w.isolation = 'shared'")

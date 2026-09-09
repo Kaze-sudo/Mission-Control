@@ -8,6 +8,7 @@ import { scanForInjection } from './injection-guard'
 import { isHermesInstalled, isHermesGatewayRunning, clearHermesDetectionCache } from './hermes-sessions'
 import { isOpenCodeInstalled, getOpenCodeVersion, scanOpenCodeSessions } from './opencode-sessions'
 import { logger } from './logger'
+import { isGamutHostListeningSync } from './gamut-host'
 import {
   isValidInstallerSha256,
   resolvePinnedUserToolSpec,
@@ -189,7 +190,7 @@ export function parseScriptReviewVerdict(text: string): ScriptReviewResult | nul
   return null
 }
 
-export type RuntimeId = 'openclaw' | 'hermes' | 'claude' | 'codex' | 'opencode'
+export type RuntimeId = 'openclaw' | 'hermes' | 'claude' | 'codex' | 'opencode' | 'gamut'
 export type DeploymentMode = 'local' | 'docker'
 
 export interface RuntimeStatus {
@@ -253,6 +254,12 @@ const RUNTIME_META: Record<RuntimeId, RuntimeMeta> = {
     authRequired: false,
     authHint: '',
   },
+  gamut: {
+    name: 'Gamut',
+    description: 'Desktop multi-agent platform backed by Superagent workspaces and WSL2 runtimes.',
+    authRequired: false,
+    authHint: '',
+  },
 }
 
 export function getRuntimeMeta(id: RuntimeId): RuntimeMeta | undefined {
@@ -311,14 +318,14 @@ export const RUNTIME_CAPABILITIES: Record<RuntimeId, RuntimeCapabilities> = {
     receipts: { ...NO_RECEIPTS, telemetry: true }, // gateway session token stats
   },
   hermes: {
-    dispatch: false, // no dispatcher branch; runtime_type: 'hermes' provisions profiles only
-    session_resume: false,
+    dispatch: true, // AgentOS guarded profile dispatch via `hermes -p <profile> -z ...`
+    session_resume: false, // first slice is one-shot profile dispatch; persistent resume comes later
     pty: false,
-    workspace_cwd: false,
-    tool_policy: false,
+    workspace_cwd: true, // Hermes `--in DIR`
+    tool_policy: false, // profile toolsets are persistent; no AgentOS per-task allowlist yet
     budget_cap: false,
-    structured_output: false,
-    skills_inventory: false, // pending upstream hermes-agent#71274 (`skills list --json`)
+    structured_output: false, // one-shot returns final text, not a machine-readable envelope
+    skills_inventory: false, // profile skills exist but canonical machine-readable inventory is not yet wired
     receipts: { ...NO_RECEIPTS },
   },
   claude: {
@@ -351,6 +358,17 @@ export const RUNTIME_CAPABILITIES: Record<RuntimeId, RuntimeCapabilities> = {
     tool_policy: false,
     budget_cap: false,
     structured_output: false,
+    skills_inventory: false,
+    receipts: { ...NO_RECEIPTS },
+  },
+  gamut: {
+    dispatch: true, // official local host API: POST /api/agents/:id/sessions
+    session_resume: true, // host API supports POST /sessions/:sessionId/messages
+    pty: false,
+    workspace_cwd: false, // Gamut agent mounts/workspace are controlled by the host profile
+    tool_policy: false, // project/profile policy remains Gamut-owned; AgentOS does not override it
+    budget_cap: false, // AgentOS does not inject per-task Gamut budget overrides yet
+    structured_output: false, // host transcript is structured, but agent response remains prose/tool events
     skills_inventory: false,
     receipts: { ...NO_RECEIPTS },
   },
@@ -467,11 +485,16 @@ function detectHermes(): RuntimeStatus {
   if (installed) {
     try {
       const homeDir = require('node:os').homedir()
-      const configPath = join(homeDir, '.hermes', 'config.yaml')
-      if (existsSync(configPath)) {
+      const localAppData = process.env.LOCALAPPDATA || join(homeDir, 'AppData', 'Local')
+      const configCandidates = [
+        join(homeDir, '.hermes', 'config.yaml'),
+        join(localAppData, 'hermes', 'config.yaml'),
+        join(localAppData, 'hermes', 'profiles', 'orchestrator', 'config.yaml'),
+      ]
+      for (const configPath of configCandidates) {
+        if (!existsSync(configPath)) continue
         const raw = require('node:fs').readFileSync(configPath, 'utf8')
-        // Has a model configured = considered authenticated/configured
-        authenticated = /^model:\s*\S+/m.test(raw)
+        if (/^model:\s*\S+/m.test(raw)) { authenticated = true; break }
       }
     } catch {
       // ignore
@@ -489,13 +512,22 @@ function detectBinary(bins: string[], versionFlag = '--version'): { installed: b
   // Expand bare binary names with common install locations that may not be on PATH
   const candidates: string[] = []
   for (const bin of bins) {
-    if (!bin.includes('/')) {
+    if (!bin.includes('/') && !bin.includes('\\')) {
       candidates.push(
         path.join(homedir, '.local', 'bin', bin),
         path.join('/usr', 'local', 'bin', bin),
         path.join(homedir, 'Library', 'pnpm', bin),  // macOS pnpm global
         path.join(homedir, '.npm-global', 'bin', bin),
       )
+      if (process.platform === 'win32') {
+        candidates.push(
+          path.join(process.env.APPDATA || '', 'npm', `${bin}.cmd`),
+          path.join(process.env.APPDATA || '', 'npm', `${bin}.exe`),
+        )
+        if (bin === 'codex' || bin === 'codex-cli') {
+          candidates.push(path.join(homedir, '.codex', 'plugins', '.plugin-appserver', 'codex.exe'))
+        }
+      }
     }
     candidates.push(bin)
   }
@@ -611,12 +643,31 @@ function detectOpenCode(): RuntimeStatus {
   return { id: 'opencode', ...meta, installed, version, running, authenticated: installed }
 }
 
+function detectGamut(): RuntimeStatus {
+  const meta = RUNTIME_META.gamut
+  const appData = process.env.APPDATA || join(require('node:os').homedir(), 'AppData', 'Roaming')
+  const localAppData = process.env.LOCALAPPDATA || join(require('node:os').homedir(), 'AppData', 'Local')
+  const root = join(appData, 'Superagent')
+  const installed = existsSync(join(root, 'settings.json')) && existsSync(join(root, 'agents'))
+  let version: string | null = null
+  try {
+    const pending = join(localAppData, 'superagent-updater', 'pending', 'update-info.json')
+    if (existsSync(pending)) {
+      const info = JSON.parse(readFileSync(pending, 'utf8')) as { fileName?: string }
+      version = info.fileName?.match(/Gamut-([0-9][^-]*)-Setup/i)?.[1] || null
+    }
+  } catch { /* updater metadata is optional */ }
+  const running = installed && isGamutHostListeningSync()
+  return { id: 'gamut', ...meta, installed, version, running, authenticated: installed && running }
+}
+
 const DETECTORS: Record<RuntimeId, () => RuntimeStatus> = {
   openclaw: detectOpenClaw,
   hermes: detectHermes,
   claude: detectClaude,
   codex: detectCodex,
   opencode: detectOpenCode,
+  gamut: detectGamut,
 }
 
 /**
@@ -690,6 +741,7 @@ export function startInstall(runtime: RuntimeId, mode: DeploymentMode): InstallJ
     claude: installClaudeLocal,
     codex: installCodexLocal,
     opencode: installOpenCodeLocal,
+    gamut: installGamutLocal,
   }
   const installFn = INSTALL_FNS[runtime] || installOpenClawLocal
   installFn(job).catch((err) => {
@@ -921,6 +973,13 @@ async function installOpenCodeLocal(job: InstallJob): Promise<void> {
     job.status = 'failed'
     job.error = 'brew install failed — see output above'
   }
+  job.finishedAt = Date.now()
+}
+
+async function installGamutLocal(job: InstallJob): Promise<void> {
+  job.status = 'failed'
+  job.error = 'Gamut is managed by its desktop installer/updater; AgentOS does not install it automatically.'
+  job.output += `> ${job.error}\n`
   job.finishedAt = Date.now()
 }
 

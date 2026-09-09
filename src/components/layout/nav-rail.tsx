@@ -32,7 +32,13 @@ const navGroups: NavGroup[] = [
     items: [
       { id: 'overview', label: 'Overview', icon: <OverviewIcon />, priority: true, essential: true },
       { id: 'agents', label: 'Agents', icon: <AgentsIcon />, priority: true, essential: true },
+      { id: 'platoons', label: 'Platoons', icon: <GatewaysIcon />, priority: false, essential: true },
+      { id: 'registry', label: 'Agent Registry', icon: <RegistryIcon />, priority: false, essential: true },
+      { id: 'command', label: 'Project Command', icon: <OverviewIcon />, priority: false, essential: true },
       { id: 'tasks', label: 'Tasks', icon: <TasksIcon />, priority: true, essential: true },
+      { id: 'runs', label: 'Runs', icon: <RunsIcon />, priority: false, essential: true },
+      { id: 'approvals', label: 'Plan Approvals', icon: <ApprovalsIcon />, priority: false, essential: true },
+      { id: 'reviews', label: 'Review Queue', icon: <ApprovalsIcon />, priority: false, essential: true },
       { id: 'chat', label: 'Chat', icon: <ChatIcon />, priority: false, essential: true },
       { id: 'channels', label: 'Channels', icon: <ChannelsIcon />, priority: false },
       { id: 'skills', label: 'Skills', icon: <SkillsIcon />, priority: false },
@@ -1255,6 +1261,27 @@ function AgentsIcon() {
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="8" cy="5" r="3" />
       <path d="M2 14c0-3.3 2.7-6 6-6s6 2.7 6 6" />
+    </svg>
+  )
+}
+
+function RegistryIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2.5" y="1.5" width="11" height="4" rx="1" />
+      <rect x="2.5" y="6.5" width="11" height="4" rx="1" />
+      <rect x="2.5" y="11.5" width="7" height="3" rx="1" />
+      <path d="M6 3.5h4M6 8.5h4" />
+    </svg>
+  )
+}
+
+function RunsIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="8" cy="8" r="2.2" />
+      <path d="M3.4 3.4a6.5 6.5 0 0 0 0 9.2M12.6 12.6a6.5 6.5 0 0 0 0-9.2" />
+      <path d="M5.9 5.9a3.7 3.7 0 0 0 0 4.2M10.1 10.1a3.7 3.7 0 0 0 0-4.2" />
     </svg>
   )
 }

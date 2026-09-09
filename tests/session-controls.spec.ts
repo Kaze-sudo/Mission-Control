@@ -1,5 +1,12 @@
 import { test, expect } from '@playwright/test'
+import { execFileSync } from 'node:child_process'
 import { API_KEY_HEADER } from './helpers'
+
+/** The continue route spawns the real `opencode` binary — skip when absent. */
+const hasOpenCodeBinary = (() => {
+  try { execFileSync('opencode', ['--version'], { stdio: 'ignore' }); return true } catch { return false }
+})()
+
 test.describe('Session Controls API', () => {
   // ── GET /api/sessions ─────────────────────────
 
@@ -40,6 +47,7 @@ test.describe('Session Controls API', () => {
   })
 
   test('POST /api/sessions/continue returns OpenCode response over HTTP', async ({ request }) => {
+    test.skip(!hasOpenCodeBinary, 'real `opencode` binary not installed on this machine — the continue route spawns it directly')
     const sessionsRes = await request.get('/api/sessions', { headers: API_KEY_HEADER })
     expect(sessionsRes.status()).toBe(200)
     const sessionsBody = await sessionsRes.json()

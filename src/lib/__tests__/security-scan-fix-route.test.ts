@@ -161,7 +161,17 @@ describe('security-scan fix route env mutation', () => {
     const response = await POST(request(JSON.stringify({ ids: ['world_writable'] })))
 
     expect(response.status).toBe(200)
-    expect(statSync(filePath).mode & 0o777).toBe(0o664)
+    const mode = statSync(filePath).mode & 0o777
+    // The fix must clear the world-write bit and MUST NOT add execute bits.
+    // POSIX check: 0o666 -> 0o664. Windows: chmod has no world-write concept,
+    // so the write flag stays 0o200 and the invariant asserted here is that no
+    // execute bit was introduced and the file remains writable by owner.
+    if (process.platform === 'win32') {
+      expect(mode & 0o111).toBe(0)
+      expect(mode & 0o200).toBe(0o200)
+    } else {
+      expect(mode).toBe(0o664)
+    }
   })
 
   it('reports a busy OpenClaw config without overwriting it', async () => {

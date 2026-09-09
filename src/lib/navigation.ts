@@ -3,6 +3,7 @@
 import { useRouter, usePathname } from 'next/navigation'
 import { startTransition, useCallback, useEffect } from 'react'
 import { startNavigationTiming } from '@/lib/navigation-metrics'
+import { objectiveCommandHref, projectCommandHref } from '@/lib/project-link'
 import { useMissionControl } from '@/store'
 
 export function panelHref(panel: string): string {
@@ -59,4 +60,27 @@ export function usePrefetchPanel() {
     const href = panelHref(panel)
     safePrefetch(router, href)
   }, [router])
+}
+
+/**
+ * Navigate to a specific project's Project Command view. Any project
+ * reference across Mission Control should use this (or `projectCommandHref`)
+ * so deep links share one routing contract. Pass an optional `objectiveId` to
+ * open the execution preview for that objective alongside the project.
+ */
+export function useNavigateToProjectCommand() {
+  const router = useRouter()
+  const { setActiveTab } = useMissionControl()
+
+  return useCallback((projectId: number, objectiveId?: number | null) => {
+    const href = objectiveId !== undefined && objectiveId !== null && Number.isFinite(objectiveId) && objectiveId > 0
+      ? objectiveCommandHref(projectId, objectiveId)
+      : projectCommandHref(projectId)
+    if (typeof window !== 'undefined' && window.location.pathname + window.location.search === href) return
+    safePrefetch(router, href)
+    setActiveTab('command')
+    startTransition(() => {
+      router.push(href, { scroll: false })
+    })
+  }, [router, setActiveTab])
 }
