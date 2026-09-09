@@ -1,5 +1,6 @@
 import { getDatabase, db_helpers } from './db'
 import { getProjectCommand } from './project-command'
+import { eventBus } from './event-bus'
 
 interface QueueTask {
   id: number
@@ -51,12 +52,28 @@ export function brokerAgentOSDispatchQueue(workspaceId?: number): { ok: boolean;
     WHERE t.status = 'assigned' AND a.source = 'agentos-external' ${wsFilter}
   `).all(...wsParams) as QueueTask[]
 
+  // Tasks already parked from a previous pass: releasing one of these is a
+  // real awaiting_owner → assigned transition operators can observe. A task
+  // held AND released within this same pass never observably changed state,
+  // so it must stay silent — otherwise every scheduler tick would emit two
+  // spurious events per flowing task and erode trust in the live feed.
+  const preHeldIds = new Set(
+    (db.prepare(`
+      SELECT t.id
+      FROM tasks t JOIN agents a ON a.name = t.assigned_to AND a.workspace_id = t.workspace_id
+      WHERE t.status = 'awaiting_owner' AND a.source = 'agentos-external' ${wsFilter}
+    `).all(...wsParams) as Array<{ id: number }>).map(row => row.id),
+  )
+
   let held = 0
   const now = Math.floor(Date.now() / 1000)
   const holdStmt = db.prepare("UPDATE tasks SET status = 'awaiting_owner', updated_at = ? WHERE id = ? AND workspace_id = ? AND status = 'assigned'")
+  const heldThisTick: QueueTask[] = []
   for (const task of assigned) {
     const result = holdStmt.run(now, task.id, task.workspace_id)
-    held += result.changes
+    if (result.changes === 0) continue
+    held++
+    heldThisTick.push(task)
   }
 
   const waiting = db.prepare(`
@@ -69,6 +86,7 @@ export function brokerAgentOSDispatchQueue(workspaceId?: number): { ok: boolean;
   const counts = activeCounts(workspaceId)
   let released = 0
   const releaseStmt = db.prepare("UPDATE tasks SET status = 'assigned', updated_at = ? WHERE id = ? AND workspace_id = ? AND status = 'awaiting_owner'")
+  const releasedIds = new Set<number>()
 
   for (const task of waiting) {
     if (!task.project_id) continue
@@ -91,10 +109,40 @@ export function brokerAgentOSDispatchQueue(workspaceId?: number): { ok: boolean;
     const result = releaseStmt.run(now, task.id, task.workspace_id)
     if (!result.changes) continue
     released++
+    releasedIds.add(task.id)
     counts.project.set(projectKey, projectCount + 1)
     counts.platoon.set(platoonKey, platoonCount + 1)
     counts.agent.set(agentKey, agentCount + 1)
     db_helpers.logActivity('agentos_dispatch_released', 'task', task.id, 'agentos', `AgentOS released task to ${platoon} within project concurrency limits`, { routing_agent_name: task.assigned_to }, task.workspace_id)
+    // Release is the operator-visible "work is about to run" moment. Only a
+    // release of previously-parked work is observable; same-pass hold+release
+    // stays silent above.
+    if (preHeldIds.has(task.id)) {
+      eventBus.broadcast('task.status_changed', {
+        workspace_id: task.workspace_id,
+        id: task.id,
+        status: 'assigned',
+        previous_status: 'awaiting_owner',
+        reason: 'agentos_dispatch_broker_release',
+        platoon_id: platoon,
+      })
+    }
+  }
+
+  // Live-state contract (docs/cli-agent-control.md): every observable
+  // dispatcher status transition is broadcast so SSE-connected operator
+  // surfaces (Runs, Overview) converge instantly instead of showing QUEUED
+  // work the broker has already parked as HELD until the next poll tick.
+  // Held-and-released-in-the-same-pass work had no net transition — silent.
+  for (const task of heldThisTick) {
+    if (releasedIds.has(task.id)) continue
+    eventBus.broadcast('task.status_changed', {
+      workspace_id: task.workspace_id,
+      id: task.id,
+      status: 'awaiting_owner',
+      previous_status: 'assigned',
+      reason: 'agentos_dispatch_broker_hold',
+    })
   }
 
   return { ok: true, held, released, message: `AgentOS broker held ${held} queued task(s) and released ${released} within policy limits` }
