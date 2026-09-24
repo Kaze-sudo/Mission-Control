@@ -4,6 +4,11 @@ This repository includes a first-party CLI at:
 
 - scripts/mc-cli.cjs
 
+Installed as `mc` when the package is installed (e.g. `pnpm pack` + global/
+local install, or `npm i -g .` from a checkout) via the `bin` entry in
+package.json. In the repo itself, run it without any install as
+`pnpm mc <group> <action>` or `node scripts/mc-cli.cjs <group> <action>`.
+
 Designed for autonomous/headless usage first:
 - API key auth support
 - Profile persistence (~/.mission-control/profiles/*.json)
@@ -23,9 +28,16 @@ Designed for autonomous/headless usage first:
 3) Run commands:
 
 ```bash
+# from a checkout (no install needed)
+pnpm mc agents list --json
+pnpm mc tasks queue --agent Aegis --max-capacity 2 --json
+pnpm mc sessions control --id <session-id> --action terminate
+
+# or directly
 node scripts/mc-cli.cjs agents list --json
-node scripts/mc-cli.cjs tasks queue --agent Aegis --max-capacity 2 --json
-node scripts/mc-cli.cjs sessions control --id <session-id> --action terminate
+
+# after installing the package (bin entry)
+mc agents list --json
 ```
 
 ## Command groups
@@ -188,7 +200,9 @@ Baseline policy in this repo:
 
 ## Next steps
 
-- Promote script to package.json bin entry (`mc`).
+- ~~Promote script to package.json bin entry (`mc`).~~ Done: `bin.mc` →
+  `scripts/mc-cli.cjs` (shebang normalized to LF for Unix exec; script ships in
+  the npm tarball by default — no `files` allowlist exists).
 - Add retry/backoff for transient failures.
 - Add integration tests that run the CLI against a test server fixture.
 - Add richer pagination/filter flags for list commands.

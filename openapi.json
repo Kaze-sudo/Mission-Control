@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Mission Control API",
-    "version": "1.4.0",
+    "version": "1.6.0",
     "description": "AI Agent Orchestration Platform API"
   },
   "servers": [
@@ -13486,6 +13486,86 @@
         }
       }
     },
+    "/api/agentos/approvals": {
+      "get": {
+        "tags": [
+          "AgentOS"
+        ],
+        "summary": "List AgentOS approval queue",
+        "operationId": "listAgentOSApprovals",
+        "description": "Canonical cross-project approval queue: every objective whose latest stored execution plan requires approval and is not covered by a VALID approval (missing, STALE, or EXPIRED), with mission cost summaries and maximum exposure. Read-only; approve/deny mutations stay on the authoritative per-project route POST /api/projects/{id}/agentos-execution.",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Narrow the queue to one project"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "maximum": 250
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Approval queue items with status summary"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/agentos/reviews": {
+      "get": {
+        "tags": [
+          "AgentOS"
+        ],
+        "summary": "List AgentOS review queue",
+        "operationId": "listAgentOSReviews",
+        "description": "Canonical cross-project review queue: every task whose executor work landed in a review state ('review' or 'quality_review'), with the latest quality-review record and delegation identity. Read-only; review decisions go through the authoritative backend POST /api/quality-review.",
+        "parameters": [
+          {
+            "name": "project_id",
+            "in": "query",
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Narrow the queue to one project"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 100,
+              "maximum": 250
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Review queue items with summary"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
     "/api/agentos/resources": {
       "get": {
         "tags": [
@@ -14573,6 +14653,1012 @@
           }
         }
       }
+    },
+    "/api/v1/runs": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "List agent runs (Agent Run Protocol)",
+        "operationId": "listAgentRunsV1",
+        "description": "Workspace-scoped agent run feed per the agent-run spec (X-Agent-Run-Protocol 0.1.0). All filters are exact-match; rows are ordered newest-first and a total count is returned for pagination. Viewer role required.",
+        "parameters": [
+          {
+            "name": "agent_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Exact agent id match"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "running",
+                "completed",
+                "failed",
+                "cancelled",
+                "timeout"
+              ]
+            }
+          },
+          {
+            "name": "since",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Only runs with started_at >= this ISO timestamp"
+          },
+          {
+            "name": "task_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 50,
+              "maximum": 200
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Run list with total count",
+            "headers": {
+              "X-Agent-Run-Protocol": {
+                "description": "Agent Run Protocol version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "runs": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AgentRun"
+                      }
+                    },
+                    "total": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Report a new agent run (Agent Run Protocol)",
+        "operationId": "createAgentRunV1",
+        "description": "Ingest an AgentRun per the agent-run spec (X-Agent-Run-Protocol 0.1.0). Requires agent_id, status, and started_at; cost defaults to zero tokens, provenance to an empty object (run_hash computed server-side when absent), and steps to an empty list. The run id is server-generated (UUID) when not supplied. Operator role required.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "agent_id",
+                  "status",
+                  "started_at"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "agent_id": {
+                    "type": "string"
+                  },
+                  "agent_name": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "runtime": {
+                    "type": "string"
+                  },
+                  "runtime_version": {
+                    "type": "string"
+                  },
+                  "trigger": {
+                    "type": "string",
+                    "enum": [
+                      "manual",
+                      "cron",
+                      "webhook",
+                      "agent",
+                      "pipeline",
+                      "queue"
+                    ]
+                  },
+                  "parent_run_id": {
+                    "type": "string"
+                  },
+                  "task_id": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "running",
+                      "completed",
+                      "failed",
+                      "cancelled",
+                      "timeout"
+                    ]
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "enum": [
+                      "success",
+                      "failed",
+                      "partial",
+                      "abandoned"
+                    ]
+                  },
+                  "started_at": {
+                    "type": "string"
+                  },
+                  "ended_at": {
+                    "type": "string"
+                  },
+                  "duration_ms": {
+                    "type": "integer"
+                  },
+                  "steps": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/AgentRunStep"
+                    }
+                  },
+                  "tools_available": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "cost": {
+                    "type": "object",
+                    "properties": {
+                      "input_tokens": {
+                        "type": "integer"
+                      },
+                      "output_tokens": {
+                        "type": "integer"
+                      },
+                      "cache_read_tokens": {
+                        "type": "integer"
+                      },
+                      "cache_write_tokens": {
+                        "type": "integer"
+                      },
+                      "total_tokens": {
+                        "type": "integer"
+                      },
+                      "cost_usd": {
+                        "type": "number"
+                      },
+                      "model": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "provenance": {
+                    "type": "object",
+                    "properties": {
+                      "run_hash": {
+                        "type": "string"
+                      },
+                      "parent_run_hash": {
+                        "type": "string"
+                      },
+                      "lineage": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "model_version": {
+                        "type": "string"
+                      },
+                      "config_hash": {
+                        "type": "string"
+                      },
+                      "runtime": {
+                        "type": "string"
+                      },
+                      "signed_by": {
+                        "type": "string"
+                      },
+                      "signature": {
+                        "type": "string"
+                      },
+                      "created_at": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "eval": {
+                    "type": "object",
+                    "properties": {
+                      "task_type": {
+                        "type": "string"
+                      },
+                      "eval_layer": {
+                        "type": "string"
+                      },
+                      "pass": {
+                        "type": "boolean"
+                      },
+                      "score": {
+                        "type": "number"
+                      },
+                      "expected_outcome": {
+                        "type": "string"
+                      },
+                      "actual_outcome": {
+                        "type": "string"
+                      },
+                      "metrics": {
+                        "type": "object"
+                      },
+                      "regression_from": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "type": "string"
+                      },
+                      "benchmark_id": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "error": {
+                    "type": "string"
+                  },
+                  "git_branch": {
+                    "type": "string"
+                  },
+                  "git_commit": {
+                    "type": "string"
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "metadata": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Run created with id and provenance hash",
+            "headers": {
+              "X-Agent-Run-Protocol": {
+                "description": "Agent Run Protocol version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "run_hash": {
+                      "type": "string",
+                      "description": "SHA-256 provenance hash (provided or computed from execution-relevant fields)"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing required fields: agent_id, status, started_at",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{run_id}": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Get a single agent run (Agent Run Protocol)",
+        "operationId": "getAgentRunV1",
+        "description": "Fetch one workspace-scoped run by id (X-Agent-Run-Protocol 0.1.0). Viewer role required.",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The run",
+            "headers": {
+              "X-Agent-Run-Protocol": {
+                "description": "Agent Run Protocol version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRun"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "Run not found in workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Update an agent run (Agent Run Protocol)",
+        "operationId": "updateAgentRunV1",
+        "description": "Partial update of mutable run fields: status, outcome, ended_at, duration_ms, error, model, provider, git_branch, git_commit, steps, cost, tags, metadata (X-Agent-Run-Protocol 0.1.0). Emits run.updated, or run.completed for terminal statuses. Returns 200 with the run unchanged when the body carries no updatable fields. Operator role required.",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "pending",
+                      "running",
+                      "completed",
+                      "failed",
+                      "cancelled",
+                      "timeout"
+                    ]
+                  },
+                  "outcome": {
+                    "type": "string",
+                    "enum": [
+                      "success",
+                      "failed",
+                      "partial",
+                      "abandoned"
+                    ]
+                  },
+                  "ended_at": {
+                    "type": "string"
+                  },
+                  "duration_ms": {
+                    "type": "integer"
+                  },
+                  "error": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "provider": {
+                    "type": "string"
+                  },
+                  "git_branch": {
+                    "type": "string"
+                  },
+                  "git_commit": {
+                    "type": "string"
+                  },
+                  "steps": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/AgentRunStep"
+                    }
+                  },
+                  "cost": {
+                    "type": "object",
+                    "properties": {
+                      "input_tokens": {
+                        "type": "integer"
+                      },
+                      "output_tokens": {
+                        "type": "integer"
+                      },
+                      "cost_usd": {
+                        "type": "number"
+                      }
+                    }
+                  },
+                  "tags": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "metadata": {
+                    "type": "object"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated run",
+            "headers": {
+              "X-Agent-Run-Protocol": {
+                "description": "Agent Run Protocol version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRun"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "Run not found in workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{run_id}/provenance": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Get a run's provenance record (Agent Run Protocol)",
+        "operationId": "getAgentRunProvenanceV1",
+        "description": "Fetch the provenance block (run_hash lineage, model_version, config_hash, runtime, signature) for one run (X-Agent-Run-Protocol 0.1.0). Viewer role required.",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The run's provenance",
+            "headers": {
+              "X-Agent-Run-Protocol": {
+                "description": "Agent Run Protocol version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRunProvenance"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "Run not found in workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/runs/{run_id}/eval": {
+      "put": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Attach or update a run's eval result (Agent Run Protocol)",
+        "operationId": "attachAgentRunEvalV1",
+        "description": "Attach an eval result to a run: requires pass and score; optional task_type, eval_layer, expected_outcome, actual_outcome, metrics, regression_from, detail, benchmark_id (X-Agent-Run-Protocol 0.1.0). Emits run.eval_attached. Operator role required.",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "pass",
+                  "score"
+                ],
+                "properties": {
+                  "task_type": {
+                    "type": "string"
+                  },
+                  "eval_layer": {
+                    "type": "string"
+                  },
+                  "pass": {
+                    "type": "boolean"
+                  },
+                  "score": {
+                    "type": "number"
+                  },
+                  "expected_outcome": {
+                    "type": "string"
+                  },
+                  "actual_outcome": {
+                    "type": "string"
+                  },
+                  "metrics": {
+                    "type": "object"
+                  },
+                  "regression_from": {
+                    "type": "string"
+                  },
+                  "detail": {
+                    "type": "string"
+                  },
+                  "benchmark_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Run with the eval result attached",
+            "headers": {
+              "X-Agent-Run-Protocol": {
+                "description": "Agent Run Protocol version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRun"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing required fields: pass, score",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "description": "Run not found in workspace",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/runs/stream": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Stream run events over SSE (Agent Run Protocol)",
+        "operationId": "streamAgentRunEventsV1",
+        "description": "Server-sent events feed of run lifecycle events: run.created, run.updated, run.completed, run.eval_attached (only events whose type starts with 'run.' are forwarded). Frames are 'event: <type>\\\\ndata: <AgentRun JSON>\\\\n\\\\n'; a ': heartbeat' comment is sent every 30 seconds to keep the connection alive, and the stream is cleaned up when the client aborts. Viewer role required; authentication failures return a JSON error instead of an event stream.",
+        "responses": {
+          "200": {
+            "description": "Event stream (text/event-stream)",
+            "headers": {
+              "X-Agent-Run-Protocol": {
+                "description": "Agent Run Protocol version",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Cache-Control": {
+                "description": "no-cache, no-transform",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Connection": {
+                "description": "keep-alive",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string",
+                  "description": "SSE frames: event: run.created|run.updated|run.completed|run.eval_attached, data: AgentRun JSON; heartbeat comment lines every 30s"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/api/v1/evals/leaderboard": {
+      "get": {
+        "tags": [
+          "Agents"
+        ],
+        "summary": "Eval leaderboard (Agent Run Protocol)",
+        "operationId": "getAgentRunLeaderboardV1",
+        "description": "Aggregate leaderboard over runs that have an attached eval score, grouped by agent, model, and runtime, ordered by average score descending (X-Agent-Run-Protocol 0.1.0). Viewer role required.",
+        "parameters": [
+          {
+            "name": "benchmark_id",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Exact match on the eval benchmark id"
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 50
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Leaderboard entries",
+            "headers": {
+              "X-Agent-Run-Protocol": {
+                "description": "Agent Run Protocol version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "entries": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "agent_name": {
+                            "type": "string"
+                          },
+                          "model": {
+                            "type": "string"
+                          },
+                          "runtime": {
+                            "type": "string"
+                          },
+                          "avg_score": {
+                            "type": "number"
+                          },
+                          "pass_rate": {
+                            "type": "number"
+                          },
+                          "avg_cost_usd": {
+                            "type": "number"
+                          },
+                          "run_count": {
+                            "type": "integer"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/mcp-audit/verify": {
+      "get": {
+        "tags": [
+          "Admin"
+        ],
+        "summary": "Verify MCP audit receipt signatures",
+        "operationId": "verifyMcpAuditRecords",
+        "description": "Cryptographic integrity verification of signed MCP call receipts. Two modes: pass 'id' to verify a single record (returns valid/record/error plus the signing public key; a missing or unsigned record is reported as valid:false in the body, not 404), or pass 'hours' (positive integer, max 168, default 24) to batch-verify all records in the period and get per-state counts plus an overall integrityStatus. The workspace is always taken from the authenticated admin — a workspace_id query parameter is not honored. Admin role required.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "Single-record mode: positive record id. Takes precedence over 'hours'."
+          },
+          {
+            "name": "hours",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 168,
+              "default": 24
+            },
+            "description": "Batch mode: verification window in hours"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Verification result (single-record or batch shape depending on mode)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "description": "Single-record mode",
+                      "properties": {
+                        "valid": {
+                          "type": "boolean"
+                        },
+                        "record": {
+                          "type": [
+                            "object",
+                            "null"
+                          ],
+                          "description": "The audited MCP call row; null when the record was not found"
+                        },
+                        "error": {
+                          "type": "string"
+                        },
+                        "publicKey": {
+                          "type": "string"
+                        },
+                        "verifiedAt": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "description": "Batch mode",
+                      "properties": {
+                        "total": {
+                          "type": "integer"
+                        },
+                        "signed": {
+                          "type": "integer"
+                        },
+                        "verified": {
+                          "type": "integer"
+                        },
+                        "failed": {
+                          "type": "integer"
+                        },
+                        "unsigned": {
+                          "type": "integer"
+                        },
+                        "integrityStatus": {
+                          "type": "string",
+                          "enum": [
+                            "intact",
+                            "compromised"
+                          ]
+                        },
+                        "publicKey": {
+                          "type": "string"
+                        },
+                        "verifiedAt": {
+                          "type": "string"
+                        },
+                        "period": {
+                          "type": "string",
+                          "description": "Verification window, e.g. '24h'"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid id (must be a positive integer) or invalid hours (positive integer no greater than 168)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -14938,6 +16024,432 @@
           },
           "updated_at": {
             "type": "integer"
+          }
+        }
+      },
+      "AgentRun": {
+        "type": "object",
+        "description": "Agent run per the agent-run spec, as hydrated by the Mission Control runs store.",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "agent_id": {
+            "type": "string"
+          },
+          "agent_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runtime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runtime_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trigger": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "manual",
+              "cron",
+              "webhook",
+              "agent",
+              "pipeline",
+              "queue",
+              null
+            ]
+          },
+          "parent_run_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "completed",
+              "failed",
+              "cancelled",
+              "timeout"
+            ]
+          },
+          "outcome": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "success",
+              "failed",
+              "partial",
+              "abandoned",
+              null
+            ]
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "ended_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentRunStep"
+            }
+          },
+          "tools_available": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "cost": {
+            "type": "object",
+            "properties": {
+              "input_tokens": {
+                "type": "integer"
+              },
+              "output_tokens": {
+                "type": "integer"
+              },
+              "cache_read_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cache_write_tokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "cost_usd": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "model": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "provenance": {
+            "type": "object",
+            "properties": {
+              "run_hash": {
+                "type": "string"
+              },
+              "parent_run_hash": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "lineage": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "model_version": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "config_hash": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "runtime": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "signed_by": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "signature": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "created_at": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "eval": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "description": "Present only when an eval result has been attached to the run.",
+            "properties": {
+              "task_type": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "eval_layer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "pass": {
+                "type": "boolean"
+              },
+              "score": {
+                "type": "number"
+              },
+              "metrics": {
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "detail": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "benchmark_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "git_branch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "git_commit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workspace_id": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "metadata": {
+            "type": "object"
+          }
+        }
+      },
+      "AgentRunProvenance": {
+        "type": "object",
+        "description": "Provenance block per the agent-run spec: lineage hashes, model/config identity, and optional signature.",
+        "properties": {
+          "run_hash": {
+            "type": "string"
+          },
+          "parent_run_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lineage": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "model_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "config_hash": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runtime": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "signed_by": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AgentRunStep": {
+        "type": "object",
+        "description": "A single step in an agent run (reasoning, tool call/result, message, error, or handoff).",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "reasoning",
+              "tool_call",
+              "tool_result",
+              "message",
+              "error",
+              "handoff"
+            ]
+          },
+          "tool_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "mcp_server": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "input_preview": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "output_preview": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "success": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "ended_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "duration_ms": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "tokens_used": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "metadata": {
+            "type": [
+              "object",
+              "null"
+            ]
           }
         }
       }

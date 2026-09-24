@@ -113,7 +113,11 @@ describe('Skills route security boundaries', () => {
 
   it('refuses reads and writes through a symlinked skill directory', async () => {
     await writeFile(join(outside, 'SKILL.md'), '# Outside\n\nDo not expose this.', 'utf8')
-    await symlink(outside, join(root, 'linked-skill'))
+    // Junction on win32 (unprivileged) — still a reparse point whose lstat
+    // reports isSymbolicLink() and whose realpath lands outside the root, so
+    // the route's symlink-refusal and realpath-containment checks are fully
+    // exercised and the assertions below are unchanged.
+    await symlink(outside, join(root, 'linked-skill'), process.platform === 'win32' ? 'junction' : 'dir')
 
     const writeResponse = await PUT(mutationRequest('PUT', {
       source: 'user-agents',

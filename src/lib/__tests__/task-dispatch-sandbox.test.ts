@@ -23,7 +23,12 @@ const outside = path.join(base, 'outside')
 fs.mkdirSync(project, { recursive: true })
 fs.mkdirSync(outside, { recursive: true })
 const escapeLink = path.join(root, 'escape-link')
-fs.symlinkSync(outside, escapeLink, 'dir')
+// Windows restricts unprivileged symbolic-link creation (EPERM without
+// Developer Mode/admin), but directory junctions are unprivileged and are
+// resolved identically by realpath — so the same escape-detection code path
+// (realpath containment in resolveCliDispatchCwd) is exercised on win32 and
+// every assertion below is unchanged.
+fs.symlinkSync(outside, escapeLink, process.platform === 'win32' ? 'junction' : 'dir')
 // realpath the expectations: on macOS os.tmpdir() itself sits behind a symlink
 const realRoot = fs.realpathSync(root)
 const realProject = fs.realpathSync(project)
