@@ -13282,7 +13282,19 @@
         "description": "Workspace-scoped read-only snapshot of AgentOS orchestration: CLI host health per ecosystem, project command states (with paused/blocked projects named), roster dispatchability and cost classes, gated mission/objective buckets, and recent orchestration errors.",
         "responses": {
           "200": {
-            "description": "AgentOS system status snapshot"
+            "description": "AgentOS system status snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "$ref": "#/components/schemas/AgentOSStatusSnapshot"
+                    }
+                  }
+                }
+              }
+            }
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
@@ -13425,7 +13437,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Runs feed with state summary"
+            "description": "Runs feed with state summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentOSRunsResult"
+                }
+              }
+            }
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
@@ -13444,32 +13463,25 @@
         "description": "`retry` re-enters a terminal FAILED run through current AgentOS routing (fresh specialist selection; authorization/cost gates re-run at dispatch; project pause state is honored). `cancel` cancels queued work as a pure DB transition or terminates an active Gamut run via the live host session API. Executors without a supported termination path refuse cancellation with the reason.",
         "requestBody": {
           "description": "Run action",
+          "required": true,
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "action": {
-                    "type": "string",
-                    "enum": [
-                      "retry",
-                      "cancel"
-                    ]
-                  },
-                  "delegationId": {
-                    "type": "string"
-                  },
-                  "taskId": {
-                    "type": "integer"
-                  }
-                }
+                "$ref": "#/components/schemas/AgentOSRunActionRequest"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "Action applied"
+            "description": "Action applied",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentOSRunActionResult"
+                }
+              }
+            }
           },
           "400": {
             "description": "Action refused with reason"
@@ -13515,7 +13527,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Approval queue items with status summary"
+            "description": "Approval queue items with status summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentOSApprovalResult"
+                }
+              }
+            }
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
@@ -13555,7 +13574,14 @@
         ],
         "responses": {
           "200": {
-            "description": "Review queue items with summary"
+            "description": "Review queue items with summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentOSReviewResult"
+                }
+              }
+            }
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
@@ -16450,6 +16476,947 @@
               "object",
               "null"
             ]
+          }
+        }
+      },
+      "AgentOSApprovalItem": {
+        "type": "object",
+        "properties": {
+          "objectiveId": {
+            "type": "integer"
+          },
+          "projectId": {
+            "type": "integer"
+          },
+          "projectName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "objectiveTitle": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "objectiveStatus": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "planStatus": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "planId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fingerprint": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "approvalStatus": {
+            "type": "string",
+            "enum": [
+              "NONE",
+              "VALID",
+              "STALE",
+              "EXPIRED"
+            ]
+          },
+          "approvedBy": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "approvedAt": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "missionCounts": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer"
+              },
+              "free": {
+                "type": "integer"
+              },
+              "paid": {
+                "type": "integer"
+              },
+              "unknownCost": {
+                "type": "integer"
+              },
+              "blocked": {
+                "type": "integer"
+              },
+              "requiresApproval": {
+                "type": "integer"
+              }
+            }
+          },
+          "estimatedTotalCost": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "maximumTotalExposure": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "approvalRequiredMissions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "taskId": {
+                  "type": "integer"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "assignedTo": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "specialist": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "provider": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "model": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "costClass": {
+                  "type": "string"
+                },
+                "estimatedCost": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "createdAt": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      },
+      "AgentOSApprovalResult": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentOSApprovalItem"
+            }
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer"
+              },
+              "byStatus": {
+                "type": "object",
+                "properties": {
+                  "NONE": {
+                    "type": "integer"
+                  },
+                  "VALID": {
+                    "type": "integer"
+                  },
+                  "STALE": {
+                    "type": "integer"
+                  },
+                  "EXPIRED": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "AgentOSReviewItem": {
+        "type": "object",
+        "properties": {
+          "taskId": {
+            "type": "integer"
+          },
+          "taskTitle": {
+            "type": "string"
+          },
+          "taskStatus": {
+            "type": "string",
+            "enum": [
+              "review",
+              "quality_review"
+            ]
+          },
+          "projectId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "projectName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "objectiveId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "objectiveTitle": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "review": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "reviewer": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "notes": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
+          },
+          "delegation": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string"
+              },
+              "specialistName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "routingAgentName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "ecosystem": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "attempt": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "nativeSessionId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "resultSummary": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "errorMessage": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "completedAt": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "durationSeconds": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              }
+            }
+          },
+          "createdAt": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      },
+      "AgentOSReviewResult": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentOSReviewItem"
+            }
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer"
+              },
+              "awaitingHumanReview": {
+                "type": "integer"
+              },
+              "aegisReviewing": {
+                "type": "integer"
+              }
+            }
+          }
+        }
+      },
+      "AgentOSRunItem": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "delegation",
+              "task"
+            ]
+          },
+          "taskId": {
+            "type": "integer"
+          },
+          "taskTitle": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "projectName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "objectiveId": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "objectiveTitle": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "objectiveStatus": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "delegationId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "delegationStatus": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "taskStatus": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "QUEUED",
+              "HELD",
+              "WAITING",
+              "RUNNING",
+              "REVIEWING",
+              "RETRYING",
+              "COMPLETED",
+              "FAILED",
+              "CANCELLED"
+            ]
+          },
+          "ecosystem": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "routingAgentName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "specialistName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "attempt": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "nativeSessionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "nativeRunId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "errorClass": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "errorMessage": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "resultSummary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "updatedAt": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "completedAt": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "durationSeconds": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "holdReason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "holdCode": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "AgentOSRunsResult": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentOSRunItem"
+            }
+          },
+          "summary": {
+            "type": "object",
+            "properties": {
+              "total": {
+                "type": "integer"
+              },
+              "byState": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      },
+      "AgentOSRunActionRequest": {
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "retry",
+              "cancel"
+            ]
+          },
+          "delegationId": {
+            "type": "string"
+          },
+          "taskId": {
+            "type": "integer"
+          }
+        }
+      },
+      "AgentOSRunActionResult": {
+        "type": "object",
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "message": {
+            "type": "string"
+          },
+          "cancelled": {
+            "type": "boolean"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "held": {
+            "type": "boolean"
+          },
+          "holdReason": {
+            "type": "string"
+          },
+          "holdCode": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "AgentOSStatusSnapshot": {
+        "type": "object",
+        "properties": {
+          "asOf": {
+            "type": "integer"
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "command": {
+            "type": "object",
+            "properties": {
+              "totalProjects": {
+                "type": "integer"
+              },
+              "commanded": {
+                "type": "integer"
+              },
+              "states": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer"
+                }
+              },
+              "paused": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "updatedBy": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "updatedAt": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              },
+              "blocked": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "integer"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "updatedBy": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "updatedAt": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "platoons": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "installed": {
+                  "type": "boolean"
+                },
+                "running": {
+                  "type": "boolean"
+                },
+                "authenticated": {
+                  "type": "boolean"
+                },
+                "authRequired": {
+                  "type": "boolean"
+                },
+                "health": {
+                  "type": "string",
+                  "enum": [
+                    "ready",
+                    "degraded",
+                    "offline",
+                    "not-installed"
+                  ]
+                },
+                "commander": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "blocked": {
+                      "type": "boolean"
+                    },
+                    "blockReason": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "agentCount": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "specialists": {
+                  "type": "object",
+                  "properties": {
+                    "total": {
+                      "type": "integer"
+                    },
+                    "available": {
+                      "type": "integer"
+                    },
+                    "unavailable": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "roster": {
+            "type": "object",
+            "properties": {
+              "discovered": {
+                "type": "integer"
+              },
+              "registered": {
+                "type": "integer"
+              },
+              "dispatchable": {
+                "type": "integer"
+              },
+              "unavailable": {
+                "type": "integer"
+              },
+              "classifications": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "execution": {
+            "type": "object",
+            "properties": {
+              "objectives": {
+                "type": "object",
+                "properties": {
+                  "total": {
+                    "type": "integer"
+                  },
+                  "byStatus": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              },
+              "missions": {
+                "type": "object",
+                "properties": {
+                  "total": {
+                    "type": "integer"
+                  },
+                  "running": {
+                    "type": "integer"
+                  },
+                  "queued": {
+                    "type": "integer"
+                  },
+                  "held": {
+                    "type": "integer"
+                  },
+                  "review": {
+                    "type": "integer"
+                  },
+                  "done": {
+                    "type": "integer"
+                  },
+                  "failed": {
+                    "type": "integer"
+                  },
+                  "cancelled": {
+                    "type": "integer"
+                  },
+                  "other": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          },
+          "attention": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "delegation",
+                    "objective"
+                  ]
+                },
+                "level": {
+                  "type": "string",
+                  "enum": [
+                    "error",
+                    "warn"
+                  ]
+                },
+                "taskId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "projectId": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "projectName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "title": {
+                  "type": "string"
+                },
+                "detail": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "at": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "timestamps": {
+            "type": "object",
+            "properties": {
+              "lastRosterSeen": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "lastCommandUpdate": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "lastDelegation": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            }
           }
         }
       }

@@ -97,4 +97,31 @@ describe('api-contract-parity helpers', () => {
     expect(report.missingInRoutes).toEqual([])
     expect(report.ignoredOperations).toEqual(['PATCH /api/tasks/{id}'])
   })
+
+  it('verifies live repository openapi.json covers all live route operations and AgentOS schemas', () => {
+    const projectRoot = path.resolve(__dirname, '../../..')
+    const openapiFile = path.join(projectRoot, 'openapi.json')
+    if (!fs.existsSync(openapiFile)) return
+
+    const openapi = JSON.parse(fs.readFileSync(openapiFile, 'utf8'))
+    const report = runApiContractParityCheck({
+      projectRoot,
+      ignore: [],
+    })
+
+    expect(report.missingInOpenApi).toEqual([])
+    expect(report.missingInRoutes).toEqual([])
+
+    // Validate specific AgentOS schema components are present
+    const schemas = openapi.components?.schemas || {}
+    expect(schemas).toHaveProperty('AgentOSApprovalItem')
+    expect(schemas).toHaveProperty('AgentOSApprovalResult')
+    expect(schemas).toHaveProperty('AgentOSReviewItem')
+    expect(schemas).toHaveProperty('AgentOSReviewResult')
+    expect(schemas).toHaveProperty('AgentOSRunItem')
+    expect(schemas).toHaveProperty('AgentOSRunsResult')
+    expect(schemas).toHaveProperty('AgentOSRunActionRequest')
+    expect(schemas).toHaveProperty('AgentOSRunActionResult')
+    expect(schemas).toHaveProperty('AgentOSStatusSnapshot')
+  })
 })
