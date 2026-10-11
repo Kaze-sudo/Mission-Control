@@ -261,7 +261,7 @@ export function ProjectCommandPanel() {
     if(!projectId)return
     setExecBusy(true);setActionError(null);setActionMessage(null)
     try{
-      const data=await apiFetch<{ok?:boolean;error?:string;message?:string;plan?:ExecPlan;approval?:ExecApproval|null;approvalStatus?:'NONE'|'VALID'|'STALE'|'EXPIRED';result?:{approved?:number[];partiallyApproved?:boolean;message?:string}}>(`/api/projects/${projectId}/agentos-execution`,{method:'POST',body:JSON.stringify({action,objectiveId,...extra})})
+      const data=await apiFetch<{ok?:boolean;error?:string;errors?:string[];message?:string;plan?:ExecPlan;approval?:ExecApproval|null;approvalStatus?:'NONE'|'VALID'|'STALE'|'EXPIRED';result?:{approved?:number[];partiallyApproved?:boolean;message?:string}}>(`/api/projects/${projectId}/agentos-execution`,{method:'POST',body:JSON.stringify({action,objectiveId,...extra})})
       if(data.ok&&data.plan){
         setExecObjectiveId(objectiveId);setExecPlan(data.plan);setExecApproval(data.approval||null);setExecApprovalStatus(data.approvalStatus||'NONE')
         if(action==='approve'){
@@ -273,10 +273,22 @@ export function ProjectCommandPanel() {
         else setActionMessage(data.plan.summary.approvalRequired?'Execution preview ready — approval required before dispatch':'Execution plan ready (free/local only — runs automatically)')
       }
       else if(data.ok&&action==='deny'){setActionMessage(data.message||'Execution plan denied');setExecApproval(null);setExecApprovalStatus('NONE')}
-      else if(data.error)setActionError(data.error)
-    }catch(err){setActionError(err instanceof Error?err.message:'Execution action failed')}
+      else if(data.error){
+        setActionError(data.error)
+        if(action==='approve'){
+          // Plan or fingerprint rejected / stale: reload authoritative plan so operator reviews fresh version and must explicitly re-approve
+          void loadExecutionPreview(objectiveId,false)
+        }
+      }
+    }catch(err){
+      setActionError(err instanceof Error?err.message:'Execution action failed')
+      if(action==='approve'){
+        // In case of HTTP/network refusal or fingerprint mismatch error, reload authoritative plan
+        void loadExecutionPreview(objectiveId,false)
+      }
+    }
     finally{setExecBusy(false)}
-  },[loadContext,projectId])
+  },[loadContext,loadExecutionPreview,projectId])
 
   // Honor ?objective=<id> deep links: after the requested project is selected
   // and its context has loaded, open that objective's execution preview and
