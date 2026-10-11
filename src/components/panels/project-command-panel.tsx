@@ -552,8 +552,8 @@ export function ProjectCommandPanel() {
                     <span className="text-[10px] text-muted-foreground">Max spend $</span>
                     <input type="number" min="0" step="0.01" value={execBudgetInput} onChange={e=>setExecBudgetInput(e.target.value)} placeholder="budget" className="w-24 rounded-md border border-border bg-background px-2 py-1.5 text-sm" title="Hard whole-plan ceiling. No mission may start if its maximum possible exposure would exceed the remaining budget."/>
                   </div>
-                  <Button size="sm" disabled={execBusy||!execPlan.summary.approvalRequired} onClick={()=>void runExecAction('approve',execObjectiveId!,{approveTaskIds:'all-eligible',maxAuthorizedAmount:execBudgetInput!==''?Number(execBudgetInput):undefined})}>Approve All Within Budget</Button>
-                  <Button size="sm" variant="outline" disabled={execBusy||execSelected.size===0} onClick={()=>void runExecAction('approve',execObjectiveId!,{approveTaskIds:[...execSelected],maxAuthorizedAmount:execBudgetInput!==''?Number(execBudgetInput):undefined})}>Approve Selected ({execSelected.size})</Button>
+                  <Button size="sm" disabled={execBusy||!execPlan.summary.approvalRequired} onClick={()=>void runExecAction('approve',execObjectiveId!,{approveTaskIds:'all-eligible',fingerprint:execPlan.fingerprint,maxAuthorizedAmount:execBudgetInput!==''?Number(execBudgetInput):undefined})}>Approve All Within Budget</Button>
+                  <Button size="sm" variant="outline" disabled={execBusy||execSelected.size===0} onClick={()=>void runExecAction('approve',execObjectiveId!,{approveTaskIds:[...execSelected],fingerprint:execPlan.fingerprint,maxAuthorizedAmount:execBudgetInput!==''?Number(execBudgetInput):undefined})}>Approve Selected ({execSelected.size})</Button>
                 </>}
                 {execPlan&&<Button size="sm" variant="ghost" disabled={execBusy} onClick={()=>void runExecAction('deny',execObjectiveId!,{reason:'User held execution from Project Command'})}>Deny / Hold</Button>}
               </div>

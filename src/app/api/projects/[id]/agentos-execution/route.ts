@@ -97,6 +97,12 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       if (!taskIds && !Array.isArray(body.approveTaskIds)) {
         return NextResponse.json({ error: 'approveTaskIds must be an array or "all-eligible"' }, { status: 400 })
       }
+      const expectedFingerprint = typeof body.fingerprint === 'string'
+        ? body.fingerprint.trim()
+        : typeof body.expectedFingerprint === 'string'
+          ? body.expectedFingerprint.trim()
+          : undefined
+
       const result = createExecutionApproval({
         objectiveId,
         workspaceId,
@@ -105,6 +111,7 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
         excludeTaskIds: Array.isArray(body.excludeTaskIds) ? (body.excludeTaskIds as unknown[]).map(Number).filter(Number.isFinite) : [],
         expiresInHours: typeof body.expiresInHours === 'number' && Number.isFinite(body.expiresInHours) ? body.expiresInHours : undefined,
         maxAuthorizedAmount: body.maxAuthorizedAmount === null || body.maxAuthorizedAmount === undefined ? undefined : Number(body.maxAuthorizedAmount),
+        expectedFingerprint,
       })
       if (!result.ok || !result.plan) {
         return NextResponse.json({ ok: false, error: result.message, errors: result.errors || [] }, { status: 400 })

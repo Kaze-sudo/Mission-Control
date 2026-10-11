@@ -536,4 +536,61 @@ describe('approval + dispatch authorization', () => {
     expect(block.ok).toBe(false) // nothing eligible approved
     expect(block.message).toMatch(/Nothing to approve/)
   })
+
+  it('rejects approval when expected plan fingerprint does not match current plan', () => {
+    addAgent('hermes-cost', 'hermes')
+    const { objectiveId, projectId, tasks } = suiteObjective()
+    commandRow(projectId)
+    assign(tasks.m1, 'hermes-cost')
+
+    const plan = buildExecutionPlan({ objectiveId, workspaceId, policy: DEFAULT_EXECUTION_POLICY, actor: 'commander' })
+    expect(plan.summary.approvalRequired).toBe(true)
+
+    // 1. Unchanged plan with correct fingerprint succeeds
+    const goodApproval = createExecutionApproval({
+      objectiveId,
+      workspaceId,
+      actor: 'commander',
+      approveTaskIds: 'all-eligible',
+      expectedFingerprint: plan.fingerprint,
+    })
+    expect(goodApproval.ok).toBe(true)
+    expect(goodApproval.approval?.fingerprint).toBe(plan.fingerprint)
+
+    // 2. Mismatched / stale fingerprint is rejected without recording approval
+    const staleApproval = createExecutionApproval({
+      objectiveId,
+      workspaceId,
+      actor: 'commander',
+      approveTaskIds: 'all-eligible',
+      expectedFingerprint: 'stale-or-wrong-fp',
+    })
+    expect(staleApproval.ok).toBe(false)
+    expect(staleApproval.message).toMatch(/re-approval required/i)
+    expect(staleApproval.errors?.[0]).toMatch(/Plan fingerprint mismatch/i)
+
+    // 3. Modifying task assignment changes plan fingerprint and causes re-approval requirement
+    addAgent('gamut-cost', 'gamut')
+    assign(tasks.m1, 'gamut-cost') // changes routing & fingerprint
+    const mismatchApproval = createExecutionApproval({
+      objectiveId,
+      workspaceId,
+      actor: 'commander',
+      approveTaskIds: 'all-eligible',
+      expectedFingerprint: plan.fingerprint, // old fingerprint before reassignment
+    })
+    expect(mismatchApproval.ok).toBe(false)
+    expect(mismatchApproval.message).toMatch(/re-approval required/i)
+
+    // 4. Stale approval cannot authorize dispatch on the newly modified plan
+    const dispatchAuth = authorizeAgentOSTaskDispatch({
+      id: tasks.m1,
+      project_id: projectId,
+      workspace_id: workspaceId,
+      assigned_to: 'gamut-cost',
+      metadata: taskById(tasks.m1).metadata,
+    })
+    expect(dispatchAuth.allowed).toBe(false)
+    expect(dispatchAuth.reason).toMatch(/Approval fingerprint.*mismatch/i)
+  })
 })

@@ -14200,6 +14200,10 @@
                   "maxAuthorizedAmount": {
                     "type": "number"
                   },
+                  "fingerprint": {
+                    "type": "string",
+                    "description": "Expected plan fingerprint reviewed by operator to prevent approval race conditions"
+                  },
                   "reason": {
                     "type": "string"
                   }

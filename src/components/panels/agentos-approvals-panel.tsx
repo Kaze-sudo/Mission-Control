@@ -134,7 +134,15 @@ export function AgentOSApprovalsPanel() {
     try {
       const data = await apiFetch<{ ok?: boolean; approvalStatus?: string; error?: string }>(
         `/api/projects/${item.projectId}/agentos-execution`,
-        { method: 'POST', body: JSON.stringify({ objectiveId: item.objectiveId, action: 'approve', approveTaskIds: 'all-eligible' }) },
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            objectiveId: item.objectiveId,
+            action: 'approve',
+            approveTaskIds: 'all-eligible',
+            fingerprint: item.fingerprint,
+          }),
+        },
       )
       if (data.ok) setNotice(`Approved objective #${item.objectiveId} — authorization is fingerprint-bound; dispatch-time gates still apply.`)
       else setNotice(data.error || 'Approval was not recorded')
