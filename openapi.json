@@ -14202,7 +14202,7 @@
                   },
                   "fingerprint": {
                     "type": "string",
-                    "description": "Expected plan fingerprint reviewed by operator to prevent approval race conditions"
+                    "description": "Expected plan fingerprint reviewed by operator (REQUIRED when action is 'approve' to prevent approval race conditions; omitted/ignored for 'preview', 'refresh', and 'deny')"
                   },
                   "reason": {
                     "type": "string"

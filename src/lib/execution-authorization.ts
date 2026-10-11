@@ -213,18 +213,20 @@ export function createExecutionApproval(input: ApproveExecutionInput): ApproveEx
   const policy = executionPolicyOf(objective.project_id, input.workspaceId)
   const plan = buildExecutionPlan({ objectiveId: input.objectiveId, workspaceId: input.workspaceId, policy, actor: input.actor })
 
-  if (input.expectedFingerprint !== undefined && input.expectedFingerprint !== null) {
-    const trimmedExpected = String(input.expectedFingerprint).trim()
-    if (!trimmedExpected || trimmedExpected !== plan.fingerprint) {
-      return {
-        ok: false,
-        errors: [`Plan fingerprint mismatch: expected ${trimmedExpected || 'empty'} but current plan fingerprint is ${plan.fingerprint}. Plan was modified or refreshed since review. Re-approval required.`],
-        approved: [],
-        excluded: [],
-        heldByDependency: [],
-        partiallyApproved: false,
-        message: 'Plan has changed since review — re-approval required',
-      }
+  const rawExpected = input.expectedFingerprint ?? (input as { fingerprint?: unknown }).fingerprint
+  const expectedFingerprint = typeof rawExpected === 'string' ? rawExpected.trim() : ''
+
+  if (!expectedFingerprint || expectedFingerprint !== plan.fingerprint) {
+    return {
+      ok: false,
+      errors: [
+        `Plan fingerprint mismatch: expected ${expectedFingerprint || 'missing/empty'} but current plan fingerprint is ${plan.fingerprint}. Plan was modified or refreshed since review. Re-approval required.`,
+      ],
+      approved: [],
+      excluded: [],
+      heldByDependency: [],
+      partiallyApproved: false,
+      message: 'Plan has changed since review — re-approval required',
     }
   }
 

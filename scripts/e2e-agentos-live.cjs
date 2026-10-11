@@ -454,7 +454,7 @@ async function main() {
       deny.json?.message || `HTTP ${deny.status}`)
 
     const approve = await api(`/api/projects/${projectId}/agentos-execution`, {
-      method: 'POST', body: { objectiveId, action: 'approve', approveTaskIds: 'all-eligible' },
+      method: 'POST', body: { objectiveId, action: 'approve', approveTaskIds: 'all-eligible', fingerprint: plan?.fingerprint },
     })
     // Approve legitimately fails if no mission requires approval (free/local
     // under policy) — the plan summary tells us which contract we're in.
@@ -561,7 +561,7 @@ async function main() {
         `rowStatus=${refresh2.json?.rowStatus}`)
       if (plan2?.summary?.approvalRequired) {
         const approve2 = await api(`/api/projects/${projectId}/agentos-execution`, {
-          method: 'POST', body: { objectiveId: objectiveId2, action: 'approve', approveTaskIds: 'all-eligible' },
+          method: 'POST', body: { objectiveId: objectiveId2, action: 'approve', approveTaskIds: 'all-eligible', fingerprint: plan2.fingerprint },
         })
         check('happy-path plan approved', approve2.status === 200 && approve2.json?.ok === true,
           approve2.json?.approvalStatus
@@ -723,7 +723,7 @@ async function main() {
           `fingerprint=${String(fpA || '').slice(0, 8)}`)
 
         const approveA = await api(`/api/projects/${projectId}/agentos-execution`, {
-          method: 'POST', body: { objectiveId: objStaleId, action: 'approve', approveTaskIds: 'all-eligible' },
+          method: 'POST', body: { objectiveId: objStaleId, action: 'approve', approveTaskIds: 'all-eligible', fingerprint: fpA },
         })
         const approvedA = approveA.status === 200 && approveA.json?.ok === true
         check('plan A approved (fingerprint-bound)', approvedA,
@@ -798,7 +798,7 @@ async function main() {
 
         // Recovery path: re-approving the CURRENT plan must return to VALID.
         const reapprove = await api(`/api/projects/${projectId}/agentos-execution`, {
-          method: 'POST', body: { objectiveId: objStaleId, action: 'approve', approveTaskIds: 'all-eligible' },
+          method: 'POST', body: { objectiveId: objStaleId, action: 'approve', approveTaskIds: 'all-eligible', fingerprint: refreshRecover.json?.plan?.fingerprint },
         })
         check('re-approval of current plan restores VALID', reapprove.status === 200 && reapprove.json?.ok === true,
           reapprove.json?.approvalStatus ? `approvalStatus=${reapprove.json.approvalStatus}` : (reapprove.json?.error || `HTTP ${reapprove.status}`).slice(0, 120))
@@ -838,7 +838,7 @@ async function main() {
         })
         if (refreshOff.json?.plan?.summary?.approvalRequired) {
           await api(`/api/projects/${projectId}/agentos-execution`, {
-            method: 'POST', body: { objectiveId: objOffId, action: 'approve', approveTaskIds: 'all-eligible' },
+            method: 'POST', body: { objectiveId: objOffId, action: 'approve', approveTaskIds: 'all-eligible', fingerprint: refreshOff.json?.plan?.fingerprint },
           })
         }
 
@@ -930,7 +930,7 @@ async function main() {
           })
           if (refreshFail.json?.plan?.summary?.approvalRequired) {
             await api(`/api/projects/${projectId}/agentos-execution`, {
-              method: 'POST', body: { objectiveId: objFailId, action: 'approve', approveTaskIds: 'all-eligible' },
+              method: 'POST', body: { objectiveId: objFailId, action: 'approve', approveTaskIds: 'all-eligible', fingerprint: refreshFail.json?.plan?.fingerprint },
             })
           }
           const execFail = await api(`/api/projects/${projectId}/agentos-objectives`, {

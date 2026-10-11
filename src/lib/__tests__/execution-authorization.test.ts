@@ -366,7 +366,8 @@ describe('approval + dispatch authorization', () => {
     expect(state.activities.some((args: any) => args[0] === 'agentos_execution_approval_held' && args[5]?.task_id === tasks.m2)).toBe(true)
 
     // Approve the whole objective — fingerprint binds approval to this snapshot.
-    const approval = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: 'all-eligible' })
+    const approvalPlan = buildExecutionPlan({ objectiveId, workspaceId, policy: DEFAULT_EXECUTION_POLICY, actor: 'commander' })
+    const approval = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: 'all-eligible', expectedFingerprint: approvalPlan.fingerprint })
     expect(approval.ok).toBe(true)
     expect(approval.approved).toContain(tasks.m2)
     const approvedAuth = authorizeAgentOSTaskDispatch({
@@ -384,7 +385,8 @@ describe('approval + dispatch authorization', () => {
     commandRow(projectId)
     // All six missions routed to hermes (unknown cost) → every one needs approval.
     for (const key of ['m1', 'm2', 'm3', 'm4', 'm5', 'm6']) assign(tasks[key], 'hermes-a')
-    const approval = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: [tasks.m1, tasks.m2, tasks.m3] })
+    const partialPlan = buildExecutionPlan({ objectiveId, workspaceId, policy: DEFAULT_EXECUTION_POLICY, actor: 'commander' })
+    const approval = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: [tasks.m1, tasks.m2, tasks.m3], expectedFingerprint: partialPlan.fingerprint })
     expect(approval.ok).toBe(true)
     expect(approval.partiallyApproved).toBe(true)
     expect(approval.approved).toEqual(expect.arrayContaining([tasks.m1, tasks.m2, tasks.m3]))
@@ -403,7 +405,8 @@ describe('approval + dispatch authorization', () => {
     const { objectiveId, projectId, tasks } = suiteObjective()
     commandRow(projectId)
     for (const key of ['m1', 'm2', 'm3', 'm4', 'm5', 'm6']) assign(tasks[key], 'hermes-a')
-    const onlyM6 = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: [tasks.m6] })
+    const gatedPlan = buildExecutionPlan({ objectiveId, workspaceId, policy: DEFAULT_EXECUTION_POLICY, actor: 'commander' })
+    const onlyM6 = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: [tasks.m6], expectedFingerprint: gatedPlan.fingerprint })
     expect(onlyM6.ok).toBe(false)
     expect(onlyM6.heldByDependency).toContain(tasks.m6)
   })
@@ -414,7 +417,8 @@ describe('approval + dispatch authorization', () => {
     const { objectiveId, projectId, tasks } = suiteObjective()
     commandRow(projectId)
     assign(tasks.m1, 'hermes-a')
-    const approval = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: 'all-eligible' })
+    const plan = buildExecutionPlan({ objectiveId, workspaceId, policy: DEFAULT_EXECUTION_POLICY, actor: 'commander' })
+    const approval = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: 'all-eligible', expectedFingerprint: plan.fingerprint })
     expect(approval.ok).toBe(true)
     // Re-route M1 to a different specialist — materially different plan.
     assign(tasks.m1, 'hermes-b')
@@ -455,7 +459,8 @@ describe('approval + dispatch authorization', () => {
     `).run(projectId, workspaceId)
     assign(tasks.m1, 'codex-a')
     annotate(tasks.m1, { provider: 'codex' })
-    const approval = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: 'all-eligible' })
+    const plan = buildExecutionPlan({ objectiveId, workspaceId, policy: executionPolicyOf(projectId, workspaceId), actor: 'commander' })
+    const approval = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: 'all-eligible', expectedFingerprint: plan.fingerprint })
     expect(approval.ok).toBe(true)
     const auth = authorizeAgentOSTaskDispatch({
       id: tasks.m1, project_id: projectId, workspace_id: workspaceId, assigned_to: 'codex-a', metadata: taskById(tasks.m1).metadata,
@@ -495,7 +500,8 @@ describe('approval + dispatch authorization', () => {
     const { objectiveId, projectId, tasks } = suiteObjective()
     commandRow(projectId)
     assign(tasks.m1, 'hermes-a')
-    const approval = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: 'all-eligible' })
+    const plan = buildExecutionPlan({ objectiveId, workspaceId, policy: DEFAULT_EXECUTION_POLICY, actor: 'commander' })
+    const approval = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: 'all-eligible', expectedFingerprint: plan.fingerprint })
     expect(approval.ok).toBe(true)
     expect(latestApprovalForObjective(objectiveId, 2)).toBeNull()
     const auth = authorizeAgentOSTaskDispatch({
@@ -519,7 +525,7 @@ describe('approval + dispatch authorization', () => {
     expect(state.activities.some((args: any) => args[0] === 'agentos_execution_approval_held')).toBe(true)
     // Held missions stay untouched — never claimed, never delegated.
     expect(taskById(tasks.m2).status).toBe('inbox')
-    const approval = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: 'all-eligible' })
+    const approval = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: 'all-eligible', expectedFingerprint: plan.fingerprint })
     expect(approval.ok).toBe(true)
     expect(state.activities.some((args: any) => args[0] === 'execution_approved')).toBe(true)
   })
@@ -532,7 +538,7 @@ describe('approval + dispatch authorization', () => {
     const plan: ExecutionPlan = buildExecutionPlan({ objectiveId, workspaceId, policy: DEFAULT_EXECUTION_POLICY, actor: 'x' })
     expect(plan.summary.approvalRequired).toBe(true)
     const m6 = plan.missions.find(mission => mission.missionKey === 'm6')!
-    const block = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: [] })
+    const block = createExecutionApproval({ objectiveId, workspaceId, actor: 'commander', approveTaskIds: [], expectedFingerprint: plan.fingerprint })
     expect(block.ok).toBe(false) // nothing eligible approved
     expect(block.message).toMatch(/Nothing to approve/)
   })
@@ -591,6 +597,63 @@ describe('approval + dispatch authorization', () => {
       metadata: taskById(tasks.m1).metadata,
     })
     expect(dispatchAuth.allowed).toBe(false)
-    expect(dispatchAuth.reason).toMatch(/Approval fingerprint.*mismatch/i)
+    expect(dispatchAuth.approvalStatus).toBe('STALE')
+    expect(dispatchAuth.reason).toMatch(/stale/i)
+  })
+
+  it('rejects approval when fingerprint is missing, null, or empty string and records no approval', () => {
+    addAgent('hermes-cost', 'hermes')
+    const { objectiveId, projectId, tasks } = suiteObjective()
+    commandRow(projectId)
+    assign(tasks.m1, 'hermes-cost')
+
+    const initialApprovalCount = (state.db!.prepare('SELECT COUNT(*) as c FROM agentos_execution_approvals WHERE objective_id = ?').get(objectiveId) as { c: number }).c
+
+    // Missing fingerprint (undefined)
+    const missingRes = createExecutionApproval({
+      objectiveId,
+      workspaceId,
+      actor: 'commander',
+      approveTaskIds: 'all-eligible',
+    })
+    expect(missingRes.ok).toBe(false)
+    expect(missingRes.message).toMatch(/re-approval required/i)
+
+    // Null fingerprint
+    const nullRes = createExecutionApproval({
+      objectiveId,
+      workspaceId,
+      actor: 'commander',
+      approveTaskIds: 'all-eligible',
+      expectedFingerprint: null,
+    })
+    expect(nullRes.ok).toBe(false)
+    expect(nullRes.message).toMatch(/re-approval required/i)
+
+    // Empty string fingerprint
+    const emptyRes = createExecutionApproval({
+      objectiveId,
+      workspaceId,
+      actor: 'commander',
+      approveTaskIds: 'all-eligible',
+      expectedFingerprint: '   ',
+    })
+    expect(emptyRes.ok).toBe(false)
+    expect(emptyRes.message).toMatch(/re-approval required/i)
+
+    // Verify no approval row created in the database on rejection
+    const finalApprovalCount = (state.db!.prepare('SELECT COUNT(*) as c FROM agentos_execution_approvals WHERE objective_id = ?').get(objectiveId) as { c: number }).c
+    expect(finalApprovalCount).toBe(initialApprovalCount)
+
+    // Task dispatch remains held
+    const auth = authorizeAgentOSTaskDispatch({
+      id: tasks.m1,
+      project_id: projectId,
+      workspace_id: workspaceId,
+      assigned_to: 'hermes-cost',
+      metadata: taskById(tasks.m1).metadata,
+    })
+    expect(auth.allowed).toBe(false)
+    expect(auth.held).toBe(true)
   })
 })

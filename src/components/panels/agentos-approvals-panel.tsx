@@ -148,8 +148,10 @@ export function AgentOSApprovalsPanel() {
       else setNotice(data.error || 'Approval was not recorded')
       await load()
     } catch (err) {
-      // The backend refuses stale/changed plans — surface the real refusal.
-      setError(refusalMessage(err) || 'Approval failed')
+      // The backend refuses missing, stale, or changed fingerprints — surface the real refusal and reload authoritative items
+      const msg = refusalMessage(err) || 'Approval failed'
+      setError(msg)
+      await load()
     } finally {
       setBusy(null)
     }

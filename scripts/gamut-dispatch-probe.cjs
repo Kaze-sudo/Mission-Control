@@ -140,7 +140,7 @@ async function main() {
     console.log(`refresh: HTTP ${refresh.status} rowStatus=${refresh.json?.rowStatus} approvalRequired=${refresh.json?.plan?.summary?.approvalRequired}`)
     if (refresh.json?.plan?.summary?.approvalRequired) {
       const approve = await api(`/api/projects/${projectId}/agentos-execution`, {
-        method: 'POST', body: { objectiveId, action: 'approve', approveTaskIds: 'all-eligible' },
+        method: 'POST', body: { objectiveId, action: 'approve', approveTaskIds: 'all-eligible', fingerprint: refresh.json?.plan?.fingerprint },
       })
       console.log(`approve: HTTP ${approve.status} ok=${approve.json?.ok} status=${approve.json?.approvalStatus}`)
     }

@@ -97,11 +97,18 @@ export async function POST(request: NextRequest, { params }: { params: Promise<{
       if (!taskIds && !Array.isArray(body.approveTaskIds)) {
         return NextResponse.json({ error: 'approveTaskIds must be an array or "all-eligible"' }, { status: 400 })
       }
-      const expectedFingerprint = typeof body.fingerprint === 'string'
-        ? body.fingerprint.trim()
-        : typeof body.expectedFingerprint === 'string'
-          ? body.expectedFingerprint.trim()
-          : undefined
+      const rawFingerprint = body.fingerprint ?? body.expectedFingerprint
+      const expectedFingerprint = typeof rawFingerprint === 'string'
+        ? rawFingerprint.trim()
+        : ''
+
+      if (!expectedFingerprint) {
+        return NextResponse.json({
+          ok: false,
+          error: 'fingerprint is required for approval to prevent race conditions — review the current plan and submit its fingerprint',
+          errors: ['Missing required plan fingerprint for approval'],
+        }, { status: 400 })
+      }
 
       const result = createExecutionApproval({
         objectiveId,

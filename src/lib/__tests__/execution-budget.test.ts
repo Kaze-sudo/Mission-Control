@@ -374,6 +374,7 @@ describe('plan budget + fingerprint (Phase 6/12)', () => {
       objectiveId, workspaceId, actor: 'operator',
       approveTaskIds: taskIds,
       maxAuthorizedAmount: 25,
+      expectedFingerprint: plan.fingerprint,
     })
     expect(result.ok).toBe(true)
     expect(result.approval!.maxAuthorizedAmount).toBe(25)
@@ -397,6 +398,7 @@ describe('hard budget guard + ledger (Phase 7/9/10)', () => {
       objectiveId, workspaceId, actor: 'operator',
       approveTaskIds: taskIds,
       maxAuthorizedAmount: exposure - 0.01, // ceiling below first mission's exposure
+      expectedFingerprint: plan.fingerprint,
     })
     const auth = authorizeAgentOSTaskDispatch({
       id: taskIds[0], project_id: 8, workspace_id: workspaceId, assigned_to: 'curator',
@@ -442,7 +444,7 @@ describe('hard budget guard + ledger (Phase 7/9/10)', () => {
     // Budget covers the first mission plus nearly all of the second — reserving
     // the first leaves too little for the second.
     const budget = exposures[0] + exposures[1] - 0.01
-    createExecutionApproval({ objectiveId, workspaceId, actor: 'operator', approveTaskIds: taskIds, maxAuthorizedAmount: budget })
+    createExecutionApproval({ objectiveId, workspaceId, actor: 'operator', approveTaskIds: taskIds, maxAuthorizedAmount: budget, expectedFingerprint: plan.fingerprint })
 
     // First mission passes and reserves.
     expect(authorizeAgentOSTaskDispatch({
@@ -464,7 +466,8 @@ describe('hard budget guard + ledger (Phase 7/9/10)', () => {
 
   it('partial approval excludes unapproved missions from dispatch', () => {
     const { objectiveId, taskIds } = objectiveWithTasks()
-    createExecutionApproval({ objectiveId, workspaceId, actor: 'operator', approveTaskIds: [taskIds[0]], maxAuthorizedAmount: 100 })
+    const plan = buildExecutionPlan({ objectiveId, workspaceId, policy: DEFAULT_EXECUTION_POLICY, actor: 'test' })
+    createExecutionApproval({ objectiveId, workspaceId, actor: 'operator', approveTaskIds: [taskIds[0]], maxAuthorizedAmount: 100, expectedFingerprint: plan.fingerprint })
     const first = authorizeAgentOSTaskDispatch({
       id: taskIds[0], project_id: 8, workspace_id: workspaceId, assigned_to: 'curator',
       metadata: JSON.stringify({ agentos: { objectiveId } }),
