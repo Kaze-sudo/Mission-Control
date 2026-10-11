@@ -16584,6 +16584,30 @@
               "null"
             ]
           },
+          "estimatedTotalInputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "estimatedTotalOutputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "maximumTotalInputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "maximumTotalOutputTokens": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "approvalRequiredMissions": {
             "type": "array",
             "items": {
@@ -16625,6 +16649,42 @@
                 "estimatedCost": {
                   "type": [
                     "number",
+                    "null"
+                  ]
+                },
+                "estimatedInputTokens": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "estimatedOutputTokens": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "maximumAuthorizedInputTokens": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "maximumAuthorizedOutputTokens": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "maximumMissionExposure": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "costBasis": {
+                  "type": [
+                    "string",
                     "null"
                   ]
                 }
@@ -16746,6 +16806,72 @@
                 "type": [
                   "integer",
                   "null"
+                ]
+              }
+            }
+          },
+          "telemetry": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "enum": [
+                  "execution_ledger",
+                  "token_usage",
+                  "none"
+                ]
+              },
+              "actualCost": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "currency": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "inputTokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "outputTokens": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "estimatedCost": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "estimatedCurrency": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "costDelta": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "isPartial": {
+                "type": "boolean"
+              },
+              "scope": {
+                "type": "string",
+                "enum": [
+                  "attempt",
+                  "task_aggregate",
+                  "none"
                 ]
               }
             }

@@ -58,6 +58,35 @@ function seedSchema(db: InstanceType<typeof Database>): void {
       created_at INTEGER NOT NULL DEFAULT (unixepoch()),
       workspace_id INTEGER NOT NULL DEFAULT 1
     );
+    CREATE TABLE agentos_execution_costs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      objective_id INTEGER NOT NULL,
+      workspace_id INTEGER NOT NULL,
+      task_id INTEGER,
+      delegation_id TEXT,
+      plan_id TEXT,
+      approval_id TEXT,
+      kind TEXT NOT NULL CHECK(kind IN ('reserved','released','actual')),
+      amount REAL NOT NULL DEFAULT 0,
+      currency TEXT NOT NULL DEFAULT 'USD',
+      input_tokens INTEGER,
+      output_tokens INTEGER,
+      provider_generation_id TEXT,
+      note TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+    CREATE TABLE token_usage (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      model TEXT,
+      session_id TEXT,
+      input_tokens INTEGER DEFAULT 0,
+      output_tokens INTEGER DEFAULT 0,
+      cost_usd REAL,
+      agent_name TEXT,
+      task_id INTEGER,
+      workspace_id INTEGER NOT NULL DEFAULT 1,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
   `)
 }
 
@@ -245,5 +274,110 @@ describe('listReviewableTasks', () => {
     const result = listReviewableTasks(1)
 
     expect(result.items.map(i => i.taskId)).toEqual([41, 40])
+  })
+
+  it('populates actual telemetry from agentos_execution_costs without double-counting', () => {
+    const db = state.db!
+    insertProject(db, 8, 'Costed')
+    insertTask(db, {
+      id: 50,
+      title: 'Costed task',
+      status: 'review',
+      projectId: 8,
+      metadata: JSON.stringify({ agentos_execution: { estimatedCost: 0.15 } }),
+    })
+    insertDelegation(db, {
+      id: 'del-cost-1',
+      taskId: 50,
+      projectId: 8,
+      status: 'completed',
+    })
+
+    // Insert reserved, released, and actual entries. Only 'actual' must be included in actualCost
+    db.prepare(`
+      INSERT INTO agentos_execution_costs (objective_id, workspace_id, task_id, delegation_id, kind, amount, currency, input_tokens, output_tokens)
+      VALUES (1, 1, 50, 'del-cost-1', 'reserved', 0.20, 'USD', null, null)
+    `).run()
+    db.prepare(`
+      INSERT INTO agentos_execution_costs (objective_id, workspace_id, task_id, delegation_id, kind, amount, currency, input_tokens, output_tokens)
+      VALUES (1, 1, 50, 'del-cost-1', 'actual', 0.12, 'USD', 45000, 2500)
+    `).run()
+    db.prepare(`
+      INSERT INTO agentos_execution_costs (objective_id, workspace_id, task_id, delegation_id, kind, amount, currency, input_tokens, output_tokens)
+      VALUES (1, 1, 50, 'del-cost-1', 'released', 0.20, 'USD', null, null)
+    `).run()
+
+    // Also insert token_usage to verify deduplication (execution_costs takes precedence)
+    db.prepare(`
+      INSERT INTO token_usage (model, task_id, workspace_id, input_tokens, output_tokens, cost_usd)
+      VALUES ('gpt-5.6', 50, 1, 99999, 99999, 5.00)
+    `).run()
+
+    const result = listReviewableTasks(1)
+    expect(result.items).toHaveLength(1)
+    const item = result.items[0]
+    expect(item.telemetry.source).toBe('execution_ledger')
+    expect(item.telemetry.actualCost).toBe(0.12)
+    expect(item.telemetry.currency).toBe('USD')
+    expect(item.telemetry.inputTokens).toBe(45000)
+    expect(item.telemetry.outputTokens).toBe(2500)
+    expect(item.telemetry.estimatedCost).toBe(0.15)
+    expect(item.telemetry.costDelta).toBe(-0.03)
+    expect(item.telemetry.scope).toBe('attempt')
+  })
+
+  it('handles missing telemetry truthfully without inventing zeros', () => {
+    const db = state.db!
+    insertProject(db, 9, 'Uncosted')
+    insertTask(db, { id: 60, title: 'No cost data', status: 'review', projectId: 9 })
+
+    const result = listReviewableTasks(1)
+    expect(result.items).toHaveLength(1)
+    const item = result.items[0]
+    expect(item.telemetry.source).toBe('none')
+    expect(item.telemetry.actualCost).toBeNull()
+    expect(item.telemetry.inputTokens).toBeNull()
+    expect(item.telemetry.outputTokens).toBeNull()
+    expect(item.telemetry.costDelta).toBeNull()
+  })
+
+  it('aggregates multiple model calls from token_usage when execution_costs is absent', () => {
+    const db = state.db!
+    insertProject(db, 10, 'TokenDriven')
+    insertTask(db, { id: 70, title: 'Multi model task', status: 'review', projectId: 10 })
+
+    db.prepare(`
+      INSERT INTO token_usage (model, task_id, workspace_id, input_tokens, output_tokens, cost_usd)
+      VALUES ('claude-3-haiku', 70, 1, 1000, 200, 0.01)
+    `).run()
+    db.prepare(`
+      INSERT INTO token_usage (model, task_id, workspace_id, input_tokens, output_tokens, cost_usd)
+      VALUES ('claude-sonnet-5', 70, 1, 5000, 1000, 0.08)
+    `).run()
+
+    const result = listReviewableTasks(1)
+    expect(result.items).toHaveLength(1)
+    const item = result.items[0]
+    expect(item.telemetry.source).toBe('token_usage')
+    expect(item.telemetry.actualCost).toBe(0.09)
+    expect(item.telemetry.inputTokens).toBe(6000)
+    expect(item.telemetry.outputTokens).toBe(1200)
+    expect(item.telemetry.scope).toBe('task_aggregate')
+  })
+
+  it('preserves workspace isolation for telemetry records', () => {
+    const db = state.db!
+    insertProject(db, 11, 'Iso')
+    insertTask(db, { id: 80, title: 'Task in ws 1', status: 'review', projectId: 11, workspaceId: 1 })
+
+    // Insert actual cost in workspace 2 for the same taskId
+    db.prepare(`
+      INSERT INTO agentos_execution_costs (objective_id, workspace_id, task_id, kind, amount, currency, input_tokens, output_tokens)
+      VALUES (1, 2, 80, 'actual', 1.50, 'USD', 10000, 2000)
+    `).run()
+
+    const result = listReviewableTasks(1)
+    expect(result.items[0].telemetry.actualCost).toBeNull()
+    expect(result.items[0].telemetry.source).toBe('none')
   })
 })

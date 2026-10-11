@@ -22,8 +22,7 @@ function planJson(overrides: {
   estimatedTotalCost?: number | null
 } = {}): string {
   const objectiveId = overrides.objectiveId ?? 10
-  const missions: ExecutionPlan['missions'] = overrides.missions ?? [
-    {
+    const mission: ExecutionPlan['missions'][number] = {
       taskId: 401,
       missionKey: 'm1',
       title: 'Write the thing',
@@ -38,10 +37,10 @@ function planJson(overrides: {
       pricingSource: 'gamut-catalog-fallback',
       costClass: 'PAID_KNOWN',
       estimatedCost: 0.04,
-      estimatedInputTokens: null,
-      estimatedOutputTokens: null,
-      maximumAuthorizedInputTokens: null,
-      maximumAuthorizedOutputTokens: null,
+      estimatedInputTokens: 12000,
+      estimatedOutputTokens: 2000,
+      maximumAuthorizedInputTokens: 24000,
+      maximumAuthorizedOutputTokens: 6000,
       maximumCostPerAttempt: 0.02,
       maxAttempts: 3,
       maximumMissionExposure: 0.08,
@@ -52,8 +51,8 @@ function planJson(overrides: {
       resources: [],
       runtimeAccess: 'host-api',
       warnings: [],
-    },
-  ]
+    }
+  const missions: ExecutionPlan['missions'] = overrides.missions ?? [mission]
   const plan: ExecutionPlan = {
     planId: `pln-obj${objectiveId}`,
     objectiveId,
@@ -187,6 +186,9 @@ describe('listApprovalRequiredPlans', () => {
     expect(mission.provider).toBe('openai')
     expect(mission.model).toBe('gpt-5.6-terra')
     expect(mission.costClass).toBe('PAID_KNOWN')
+    expect(mission.estimatedInputTokens).toBe(12000)
+    expect(item.estimatedTotalInputTokens).toBe(12000)
+    expect(item.estimatedTotalOutputTokens).toBe(2000)
   })
 
   it('excludes VALID-approved plans from the queue — they are authorized, not pending', () => {

@@ -28,6 +28,12 @@ interface ApprovalMission {
   model: string | null
   costClass: string
   estimatedCost: number | null
+  estimatedInputTokens?: number | null
+  estimatedOutputTokens?: number | null
+  maximumAuthorizedInputTokens?: number | null
+  maximumAuthorizedOutputTokens?: number | null
+  maximumMissionExposure?: number | null
+  costBasis?: string | null
 }
 
 interface ApprovalItem {
@@ -45,6 +51,10 @@ interface ApprovalItem {
   missionCounts: { total: number; free: number; paid: number; unknownCost: number; blocked: number; requiresApproval: number }
   estimatedTotalCost: number | null
   maximumTotalExposure: number | null
+  estimatedTotalInputTokens?: number | null
+  estimatedTotalOutputTokens?: number | null
+  maximumTotalInputTokens?: number | null
+  maximumTotalOutputTokens?: number | null
   approvalRequiredMissions: ApprovalMission[]
   createdAt: number | null
   updatedAt: number | null
@@ -297,9 +307,14 @@ function ApprovalCard({ item, busy, onApprove, onDeny }: {
         {item.missionCounts.paid > 0 && <Chip cls="bg-amber-500/10 text-amber-300 border-amber-500/30">{item.missionCounts.paid} paid</Chip>}
         {item.missionCounts.unknownCost > 0 && <Chip cls="bg-orange-500/10 text-orange-300 border-orange-500/30">{item.missionCounts.unknownCost} unknown cost</Chip>}
         {item.missionCounts.blocked > 0 && <Chip cls="bg-rose-500/10 text-rose-300 border-rose-500/30">{item.missionCounts.blocked} blocked</Chip>}
-        <span className="text-muted-foreground">
-          est. {fmtMoney(item.estimatedTotalCost)}
-          {item.maximumTotalExposure !== null && <> · max exposure {fmtMoney(item.maximumTotalExposure)}</>}
+        <span className="text-muted-foreground flex flex-wrap items-center gap-x-2">
+          <span>est. {fmtMoney(item.estimatedTotalCost)}</span>
+          {item.maximumTotalExposure !== null && <span>· max exposure {fmtMoney(item.maximumTotalExposure)}</span>}
+          {item.estimatedTotalInputTokens !== null && item.estimatedTotalInputTokens !== undefined && (
+            <span className="font-mono text-[10px] text-muted-foreground/80">
+              · ~{Math.round(item.estimatedTotalInputTokens / 1000)}k in / ~{Math.round((item.estimatedTotalOutputTokens || 0) / 1000)}k out tokens (est)
+            </span>
+          )}
         </span>
       </div>
 
@@ -312,6 +327,11 @@ function ApprovalCard({ item, busy, onApprove, onDeny }: {
               <span className={`rounded border px-1.5 py-0.5 font-mono text-[10px] ${COST_CHIP[m.costClass] || 'border-border text-muted-foreground'}`}>
                 {m.costClass}{m.estimatedCost !== null ? ` ${fmtMoney(m.estimatedCost)}` : ''}
               </span>
+              {m.estimatedInputTokens !== null && m.estimatedInputTokens !== undefined && (
+                <span className="font-mono text-[10px] text-muted-foreground/75">
+                  ~{Math.round(m.estimatedInputTokens / 1000)}k in
+                </span>
+              )}
               <span className="text-muted-foreground font-mono text-[10px] truncate max-w-[260px]" title={[m.assignedTo, m.provider, m.model].filter(Boolean).join(' · ')}>
                 {m.specialist || m.assignedTo || 'unassigned'}
                 {m.model ? ` · ${m.provider || '?'}/${m.model}` : ''}

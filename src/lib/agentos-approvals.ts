@@ -30,6 +30,12 @@ export interface ApprovalMissionSummary {
   model: string | null
   costClass: string
   estimatedCost: number | null
+  estimatedInputTokens: number | null
+  estimatedOutputTokens: number | null
+  maximumAuthorizedInputTokens: number | null
+  maximumAuthorizedOutputTokens: number | null
+  maximumMissionExposure: number | null
+  costBasis: string | null
 }
 
 export interface ApprovalCenterItem {
@@ -54,6 +60,10 @@ export interface ApprovalCenterItem {
   }
   estimatedTotalCost: number | null
   maximumTotalExposure: number | null
+  estimatedTotalInputTokens: number | null
+  estimatedTotalOutputTokens: number | null
+  maximumTotalInputTokens: number | null
+  maximumTotalOutputTokens: number | null
   approvalRequiredMissions: ApprovalMissionSummary[]
   createdAt: number | null
   updatedAt: number | null
@@ -141,6 +151,24 @@ export function listApprovalRequiredPlans(
       requiresApproval: missions.filter(m => m.requiresApproval).length,
     }
 
+    const sumTokens = (getter: (m: ExecutionPlan['missions'][number]) => number | null): number | null => {
+      let sum = 0
+      let hasAny = false
+      for (const m of missions) {
+        const val = getter(m)
+        if (typeof val === 'number' && Number.isFinite(val)) {
+          sum += val
+          hasAny = true
+        }
+      }
+      return hasAny ? sum : null
+    }
+
+    const estimatedTotalInputTokens = sumTokens(m => m.estimatedInputTokens)
+    const estimatedTotalOutputTokens = sumTokens(m => m.estimatedOutputTokens)
+    const maximumTotalInputTokens = sumTokens(m => m.maximumAuthorizedInputTokens)
+    const maximumTotalOutputTokens = sumTokens(m => m.maximumAuthorizedOutputTokens)
+
     items.push({
       objectiveId,
       projectId: Number(row.project_id),
@@ -156,6 +184,10 @@ export function listApprovalRequiredPlans(
       missionCounts,
       estimatedTotalCost: plan.summary?.estimatedTotalCost ?? null,
       maximumTotalExposure: plan.summary?.maximumTotalExposure ?? null,
+      estimatedTotalInputTokens,
+      estimatedTotalOutputTokens,
+      maximumTotalInputTokens,
+      maximumTotalOutputTokens,
       approvalRequiredMissions: missions
         .filter(m => m.requiresApproval)
         .map(m => ({
@@ -167,6 +199,12 @@ export function listApprovalRequiredPlans(
           model: m.modelResolved ?? m.model ?? null,
           costClass: m.costClass,
           estimatedCost: m.estimatedCost ?? null,
+          estimatedInputTokens: m.estimatedInputTokens ?? null,
+          estimatedOutputTokens: m.estimatedOutputTokens ?? null,
+          maximumAuthorizedInputTokens: m.maximumAuthorizedInputTokens ?? null,
+          maximumAuthorizedOutputTokens: m.maximumAuthorizedOutputTokens ?? null,
+          maximumMissionExposure: m.maximumMissionExposure ?? null,
+          costBasis: m.costBasis ?? null,
         })),
       createdAt: row.created_at != null ? Number(row.created_at) : null,
       updatedAt: row.updated_at != null ? Number(row.updated_at) : null,

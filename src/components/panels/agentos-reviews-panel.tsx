@@ -36,6 +36,19 @@ interface ReviewDelegation {
   durationSeconds: number | null
 }
 
+interface ReviewTelemetry {
+  source: 'execution_ledger' | 'token_usage' | 'none'
+  actualCost: number | null
+  currency: string | null
+  inputTokens: number | null
+  outputTokens: number | null
+  estimatedCost: number | null
+  estimatedCurrency: string | null
+  costDelta: number | null
+  isPartial: boolean
+  scope: 'attempt' | 'task_aggregate' | 'none'
+}
+
 interface ReviewRecord {
   reviewer: string
   status: string
@@ -51,6 +64,7 @@ interface ReviewItem {
   projectName: string | null
   objectiveId: number | null
   objectiveTitle: string | null
+  telemetry?: ReviewTelemetry
   review: ReviewRecord | null
   delegation: ReviewDelegation | null
   createdAt: number | null
@@ -273,7 +287,7 @@ function ReviewCard({ item, busy, onApprove, onReject }: {
         )}
       </div>
 
-      {/* Execution identity */}
+      {/* Execution identity & Telemetry */}
       {d && (
         <div className="flex flex-wrap items-center gap-1.5 mb-2 text-[11px]">
           {d.specialistName && <Chip cls="border-border bg-secondary/40 text-muted-foreground">{d.specialistName}</Chip>}
@@ -285,6 +299,37 @@ function ReviewCard({ item, busy, onApprove, onReject }: {
           <span className="text-muted-foreground">
             {d.durationSeconds != null ? ` · ${fmtDuration(d.durationSeconds)}` : ''}
           </span>
+        </div>
+      )}
+
+      {/* Actual cost & token telemetry */}
+      {item.telemetry && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border/40 bg-background/20 px-3 py-1.5 mb-2 text-[11px]">
+          <span className="text-muted-foreground">Actual Cost:</span>
+          {item.telemetry.actualCost !== null ? (
+            <span className="font-mono text-emerald-300">
+              ${item.telemetry.actualCost.toFixed(2)} {item.telemetry.currency || 'USD'}
+              {item.telemetry.isPartial && <span className="text-amber-400 text-[10px] ml-1">(partial)</span>}
+            </span>
+          ) : (
+            <span className="text-muted-foreground italic">Not recorded</span>
+          )}
+
+          {item.telemetry.inputTokens !== null && (
+            <span className="font-mono text-muted-foreground">
+              · {item.telemetry.inputTokens.toLocaleString()} in / {(item.telemetry.outputTokens || 0).toLocaleString()} out tokens
+            </span>
+          )}
+
+          {item.telemetry.costDelta !== null && (
+            <span className={`font-mono text-[10px] ${item.telemetry.costDelta > 0 ? 'text-amber-400' : 'text-emerald-400'}`}>
+              · {item.telemetry.costDelta > 0 ? `+$${item.telemetry.costDelta.toFixed(2)}` : `-$${Math.abs(item.telemetry.costDelta).toFixed(2)}`} vs est
+            </span>
+          )}
+
+          {item.telemetry.scope === 'task_aggregate' && (
+            <span className="text-[10px] text-muted-foreground/70 ml-auto">(task aggregate)</span>
+          )}
         </div>
       )}
 
