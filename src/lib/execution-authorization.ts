@@ -459,7 +459,7 @@ export function writeMissionCost(
     input.planId ?? null,
     input.approvalId ?? null,
     kind,
-    Math.round(input.amount * 100) / 100,
+    kind === 'actual' ? input.amount : Math.round(input.amount * 100) / 100,
     input.currency || 'USD',
     input.inputTokens ?? null,
     input.outputTokens ?? null,

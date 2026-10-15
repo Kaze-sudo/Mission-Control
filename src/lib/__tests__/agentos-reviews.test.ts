@@ -322,7 +322,7 @@ describe('listReviewableTasks', () => {
     expect(item.telemetry.inputTokens).toBe(45000)
     expect(item.telemetry.outputTokens).toBe(2500)
     expect(item.telemetry.estimatedCost).toBe(0.15)
-    expect(item.telemetry.costDelta).toBe(-0.03)
+    expect(item.telemetry.costDelta).toBeNull()
     expect(item.telemetry.scope).toBe('attempt')
   })
 
@@ -359,7 +359,7 @@ describe('listReviewableTasks', () => {
     expect(result.items).toHaveLength(1)
     const item = result.items[0]
     expect(item.telemetry.source).toBe('token_usage')
-    expect(item.telemetry.actualCost).toBe(0.09)
+    expect(item.telemetry.actualCost).toBeCloseTo(0.09)
     expect(item.telemetry.inputTokens).toBe(6000)
     expect(item.telemetry.outputTokens).toBe(1200)
     expect(item.telemetry.scope).toBe('task_aggregate')
@@ -380,4 +380,63 @@ describe('listReviewableTasks', () => {
     expect(result.items[0].telemetry.actualCost).toBeNull()
     expect(result.items[0].telemetry.source).toBe('none')
   })
+  it('keeps sub-cent costs and independent missing token fields with unknown completeness', () => {
+    const db = state.db!
+    insertTask(db, { id: 90, title: 'Tiny usage', status: 'review', projectId: null })
+    db.exec(`INSERT INTO token_usage (task_id, workspace_id, input_tokens, output_tokens, cost_usd)
+      VALUES (90, 1, NULL, 0, 0.00012)`)
+    const telemetry = listReviewableTasks(1).items[0].telemetry
+    expect(telemetry.actualCost).toBe(0.00012)
+    expect(telemetry.inputTokens).toBeNull()
+    expect(telemetry.outputTokens).toBe(0)
+    expect(telemetry.completeness).toBe('partial')
+    expect(telemetry.costDelta).toBeNull()
+  })
+
+  it('keeps multiple rows in the same latest delegation attempt-scoped', () => {
+    const db = state.db!
+    insertTask(db, { id: 91, title: 'Multiple calls', status: 'review', projectId: null })
+    insertDelegation(db, { id: 'latest', taskId: 91, projectId: null, status: 'completed', attempt: 2 })
+    db.exec(`INSERT INTO agentos_execution_costs (objective_id, workspace_id, task_id, delegation_id, kind, amount, currency, input_tokens, output_tokens)
+      VALUES (1, 1, 91, 'latest', 'actual', 0.0001, 'USD', 1, 2),
+             (1, 1, 91, 'latest', 'actual', 0.0002, 'USD', 3, 4)`)
+    const telemetry = listReviewableTasks(1).items[0].telemetry
+    expect(telemetry.scope).toBe('attempt')
+    expect(telemetry.actualCost).toBeCloseTo(0.0003)
+    expect(telemetry.inputTokens).toBe(4)
+    expect(telemetry.completeness).toBe('unknown')
+    expect(telemetry.costDelta).toBeNull()
+  })
+
+  it('does not attribute older attempts to the latest or sum mixed currencies', () => {
+    const db = state.db!
+    insertTask(db, { id: 92, title: 'Retries', status: 'review', projectId: null })
+    insertDelegation(db, { id: 'new', taskId: 92, projectId: null, status: 'completed', attempt: 2 })
+    db.exec(`INSERT INTO agentos_execution_costs (objective_id, workspace_id, task_id, delegation_id, kind, amount, currency, input_tokens, output_tokens)
+      VALUES (1, 1, 92, 'old', 'actual', 1, 'USD', 10, NULL),
+             (1, 1, 92, 'new', 'actual', 2, 'EUR', 20, 4)`)
+    const telemetry = listReviewableTasks(1).items[0].telemetry
+    expect(telemetry.scope).toBe('task_aggregate')
+    expect(telemetry.actualCost).toBeNull()
+    expect(telemetry.currency).toBeNull()
+    expect(telemetry.mixedCurrencies).toBe(true)
+    expect(telemetry.outputTokens).toBe(4)
+    expect(telemetry.isPartial).toBe(true)
+  })
+
+  it('keeps ledger precedence when token fields are missing rather than adding fallback records', () => {
+    const db = state.db!
+    insertTask(db, { id: 93, title: 'Partial ledger', status: 'review', projectId: null })
+    db.exec(`INSERT INTO agentos_execution_costs (objective_id, workspace_id, task_id, kind, amount)
+      VALUES (1, 1, 93, 'actual', 0);
+      INSERT INTO token_usage (task_id, workspace_id, input_tokens, output_tokens, cost_usd)
+      VALUES (93, 1, 100, 100, 5), (93, 2, 900, 900, 9)`)
+    const telemetry = listReviewableTasks(1).items[0].telemetry
+    expect(telemetry.actualCost).toBe(0)
+    expect(telemetry.inputTokens).toBeNull()
+    expect(telemetry.outputTokens).toBeNull()
+    expect(telemetry.source).toBe('execution_ledger')
+    expect(telemetry.completeness).toBe('partial')
+  })
+
 })

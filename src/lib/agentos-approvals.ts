@@ -156,10 +156,9 @@ export function listApprovalRequiredPlans(
       let hasAny = false
       for (const m of missions) {
         const val = getter(m)
-        if (typeof val === 'number' && Number.isFinite(val)) {
-          sum += val
-          hasAny = true
-        }
+        if (typeof val !== 'number' || !Number.isFinite(val) || val < 0) return null
+        sum += val
+        hasAny = true
       }
       return hasAny ? sum : null
     }

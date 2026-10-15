@@ -294,4 +294,17 @@ describe('listApprovalRequiredPlans', () => {
     // Workspace 2 sees nothing, even though workspace 1 has pending plans.
     expect(listApprovalRequiredPlans(2).summary.total).toBe(0)
   })
+  it('does not publish a known subset as the total token estimate', () => {
+    const db = state.db!
+    const plan = JSON.parse(planJson()) as ExecutionPlan
+    plan.missions.push({ ...plan.missions[0], taskId: 402, estimatedInputTokens: null, maximumAuthorizedOutputTokens: null })
+    db.prepare('INSERT INTO agentos_execution_plans (objective_id, project_id, workspace_id, status, plan_json) VALUES (10, 1, 1, ?, ?)')
+      .run('AWAITING_APPROVAL', JSON.stringify(plan))
+    const item = listApprovalRequiredPlans(1).items[0]
+    expect(item.estimatedTotalInputTokens).toBeNull()
+    expect(item.maximumTotalOutputTokens).toBeNull()
+    expect(item.estimatedTotalOutputTokens).toBe(4000)
+    expect(item.maximumTotalInputTokens).toBe(48000)
+  })
+
 })

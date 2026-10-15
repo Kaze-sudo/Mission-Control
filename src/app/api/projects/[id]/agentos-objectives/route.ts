@@ -1,12 +1,28 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { requireRole } from '@/lib/auth'
 import { mutationLimiter } from '@/lib/rate-limit'
+import { z } from 'zod'
 import {
   createObjectivePlan,
   executeObjective,
   listProjectObjectives,
-  type ObjectiveMissionInput,
+  previewObjectivePlan,
 } from '@/lib/objective-planning'
+
+const objectiveInputSchema = z.object({
+  action: z.enum(['preview', 'create']).optional(),
+  title: z.string().trim().min(1, 'Objective title is required').max(500),
+  description: z.string().max(30000).optional(),
+  missions: z.array(z.object({
+    key: z.string().trim().min(1).max(100).optional(),
+    title: z.string().trim().min(1).max(1000),
+    description: z.string().max(30000).optional(),
+    dependsOn: z.array(z.string().min(1).max(100)).max(100).optional(),
+    priority: z.enum(['low', 'medium', 'high', 'urgent']).optional(),
+    requiredCapabilities: z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+    preferredCapabilities: z.array(z.string().trim().min(1).max(100)).max(50).optional(),
+  })).min(1).max(100).optional(),
+})
 
 function toProjectId(raw: string): number | null {
   const value = Number.parseInt(raw, 10)
@@ -49,14 +65,16 @@ export async function POST(
     return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
 
-  const title = typeof body.title === 'string' ? body.title.trim() : ''
-  const description = typeof body.description === 'string' ? body.description : ''
-  if (!title) return NextResponse.json({ error: 'Objective title is required' }, { status: 400 })
-  const missions = Array.isArray(body.missions)
-    ? body.missions as ObjectiveMissionInput[]
-    : undefined
+  const parsed = objectiveInputSchema.safeParse(body)
+  if (!parsed.success) return NextResponse.json({ error: parsed.error.issues[0]?.message || 'Invalid objective' }, { status: 400 })
+  const { title, description, missions, action } = parsed.data
 
   try {
+    if (action === 'preview') {
+      return NextResponse.json({ plan: previewObjectivePlan({
+        projectId, workspaceId: auth.user.workspace_id ?? 1, title, description, missions,
+      }) })
+    }
     const objective = createObjectivePlan({
       projectId,
       workspaceId: auth.user.workspace_id ?? 1,

@@ -4,6 +4,7 @@ import { requireRole } from '@/lib/auth'
 import { validateBody, qualityReviewSchema } from '@/lib/validation'
 import { mutationLimiter } from '@/lib/rate-limit'
 import { logger } from '@/lib/logger'
+import { recordQualityReview, QualityReviewError } from '@/lib/quality-review'
 import { eventBus } from '@/lib/event-bus'
 
 export async function GET(request: NextRequest) {
@@ -79,57 +80,20 @@ export async function POST(request: NextRequest) {
     if ('error' in validated) return validated.error
     const { taskId, reviewer, status, notes } = validated.data
 
-    const db = getDatabase()
-    const workspaceId = auth.user.workspace_id ?? 1;
-
-    const task = db
-      .prepare('SELECT id, title FROM tasks WHERE id = ? AND workspace_id = ?')
-      .get(taskId, workspaceId) as any
-    if (!task) {
-      return NextResponse.json({ error: 'Task not found' }, { status: 404 })
-    }
-
-    const result = db.prepare(`
-      INSERT INTO quality_reviews (task_id, reviewer, status, notes, workspace_id)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(taskId, reviewer, status, notes, workspaceId)
-
+    const workspaceId = auth.user.workspace_id ?? 1
+    const result = recordQualityReview({ taskId, workspaceId, reviewer, status, notes })
     db_helpers.logActivity(
-      'quality_review',
-      'task',
-      taskId,
-      reviewer,
-      `Quality review ${status} for task: ${task.title}`,
-      { status, notes },
-      workspaceId
+      'quality_review', 'task', taskId, reviewer,
+      `Quality review ${status} for task: ${result.taskTitle}`,
+      { status, notes, taskStatus: result.taskStatus }, workspaceId,
     )
-
-    // Auto-advance task based on review outcome
-    if (status === 'approved') {
-      db.prepare('UPDATE tasks SET status = ?, updated_at = unixepoch() WHERE id = ? AND workspace_id = ?')
-        .run('done', taskId, workspaceId)
-      eventBus.broadcast('task.status_changed', {
-        workspace_id: workspaceId,
-        id: taskId,
-        status: 'done',
-        previous_status: 'review',
-        updated_at: Math.floor(Date.now() / 1000),
-      })
-    } else if (status === 'rejected') {
-      // Rejected: push back to in_progress with the rejection notes as error_message
-      db.prepare('UPDATE tasks SET status = ?, error_message = ?, updated_at = unixepoch() WHERE id = ? AND workspace_id = ?')
-        .run('in_progress', `Quality review rejected by ${reviewer}: ${notes}`, taskId, workspaceId)
-      eventBus.broadcast('task.status_changed', {
-        workspace_id: workspaceId,
-        id: taskId,
-        status: 'in_progress',
-        previous_status: 'review',
-        updated_at: Math.floor(Date.now() / 1000),
-      })
-    }
-
-    return NextResponse.json({ success: true, id: result.lastInsertRowid })
+    eventBus.broadcast('task.status_changed', {
+      workspace_id: workspaceId, id: taskId, status: result.taskStatus,
+      previous_status: result.previousStatus, updated_at: Math.floor(Date.now() / 1000),
+    })
+    return NextResponse.json({ success: true, ...result })
   } catch (error) {
+    if (error instanceof QualityReviewError) return NextResponse.json({ error: error.message }, { status: error.status })
     logger.error({ err: error }, 'POST /api/quality-review error')
     return NextResponse.json({ error: 'Failed to create quality review' }, { status: 500 })
   }

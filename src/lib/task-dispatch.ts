@@ -1,3 +1,4 @@
+import { latestReviewFeedback } from './quality-review'
 import { existsSync, realpathSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
@@ -2125,13 +2126,8 @@ export async function dispatchAssignedTasks(): Promise<{ ok: boolean; message: s
         }
       }
 
-      // Check for previous Aegis rejection feedback
-      const rejectionRow = db.prepare(`
-        SELECT content FROM comments
-        WHERE task_id = ? AND author = 'aegis' AND content LIKE 'Quality Review Rejected:%' AND workspace_id = ?
-        ORDER BY created_at DESC LIMIT 1
-      `).get(task.id, task.workspace_id) as { content: string } | undefined
-      const rejectionFeedback = rejectionRow?.content?.replace(/^Quality Review Rejected:\n?/, '') || null
+      // Both operator and automated review decisions use the same durable feedback.
+      const rejectionFeedback = latestReviewFeedback(task.id, task.workspace_id)
 
       const prompt = buildTaskPrompt(task, rejectionFeedback)
 

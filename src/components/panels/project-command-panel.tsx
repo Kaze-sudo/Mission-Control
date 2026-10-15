@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
+import { ObjectivePlanner } from './objective-planner'
 import { apiFetch } from '@/lib/api-client'
 import { parseObjectiveQueryParam, parseProjectQueryParam, resolveProjectSelection } from '@/lib/project-link'
 
@@ -81,9 +82,6 @@ export function ProjectCommandPanel() {
   const [force,setForce]=useState<ForcePlan|null>(null)
   const [objectives,setObjectives]=useState<Objective[]>([])
   const [delegations,setDelegations]=useState<Delegation[]>([])
-  const [objectiveTitle,setObjectiveTitle]=useState('')
-  const [objectiveDescription,setObjectiveDescription]=useState('')
-  const [objectiveBusy,setObjectiveBusy]=useState(false)
   const [objectiveExecutingId,setObjectiveExecutingId]=useState<number|null>(null)
   const [resourceBusy,setResourceBusy]=useState(false)
   const [arsenal,setArsenal]=useState<ArsenalState|null>(null)
@@ -244,7 +242,7 @@ export function ProjectCommandPanel() {
 
   const loadExecutionPreview=useCallback(async(objectiveId:number,notify=true)=>{
     if(!projectId)return
-    setExecBusy(true);setActionError(null)
+    setExecBusy(true);if(notify)setActionError(null)
     try{
       const data=await apiFetch<{ok?:boolean;plan?:ExecPlan;approval?:ExecApproval|null;approvalStatus?:'NONE'|'VALID'|'STALE'|'EXPIRED';rowStatus?:string|null;error?:string}>(`/api/projects/${projectId}/agentos-execution?objective_id=${objectiveId}`)
       if(data.ok&&data.plan){
@@ -277,14 +275,16 @@ export function ProjectCommandPanel() {
         setActionError(data.error)
         if(action==='approve'){
           // Plan or fingerprint rejected / stale: reload authoritative plan so operator reviews fresh version and must explicitly re-approve
-          void loadExecutionPreview(objectiveId,false)
+          setExecSelected(new Set());setExecPlan(null);setExecApproval(null);setExecApprovalStatus('STALE')
+          await loadExecutionPreview(objectiveId,false)
         }
       }
     }catch(err){
       setActionError(err instanceof Error?err.message:'Execution action failed')
       if(action==='approve'){
         // In case of HTTP/network refusal or fingerprint mismatch error, reload authoritative plan
-        void loadExecutionPreview(objectiveId,false)
+        setExecSelected(new Set());setExecPlan(null);setExecApproval(null);setExecApprovalStatus('STALE')
+        await loadExecutionPreview(objectiveId,false)
       }
     }
     finally{setExecBusy(false)}
@@ -332,16 +332,6 @@ export function ProjectCommandPanel() {
     }catch(err){setActionError(err instanceof Error?err.message:'Failed to create deep-review mission')}
     finally{setDeepReviewBusy(false)}
   },[loadArsenal,projectId])
-
-  const createObjective=useCallback(async()=>{
-    if(!projectId||!objectiveTitle.trim())return
-    setObjectiveBusy(true);setError(null)
-    try{
-      await apiFetch(`/api/projects/${projectId}/agentos-objectives`,{method:'POST',body:JSON.stringify({title:objectiveTitle.trim(),description:objectiveDescription.trim()})})
-      setObjectiveTitle('');setObjectiveDescription('');await loadContext(projectId)
-    }catch(err){setError(err instanceof Error?err.message:'Failed to create objective')}
-    finally{setObjectiveBusy(false)}
-  },[loadContext,objectiveDescription,objectiveTitle,projectId])
 
   const executeObjectiveAction=useCallback(async(objectiveId:number)=>{
     if(!projectId)return
@@ -501,11 +491,7 @@ export function ProjectCommandPanel() {
                 <div><p className="text-xs font-mono uppercase tracking-wider text-primary">Objectives</p><h2 className="text-lg font-semibold mt-1">Company objectives</h2></div>
                 <span className="text-xs text-muted-foreground">{objectives.length} recorded</span>
               </div>
-              <div className="grid gap-2">
-                <input value={objectiveTitle} onChange={e=>setObjectiveTitle(e.target.value)} className="rounded-md border border-border bg-background px-3 py-2 text-sm" placeholder="Objective title"/>
-                <textarea value={objectiveDescription} onChange={e=>setObjectiveDescription(e.target.value)} className="min-h-20 rounded-md border border-border bg-background px-3 py-2 text-sm" placeholder="Describe the objective. Put independent missions on separate lines; use Then/Next/After for dependencies."/>
-                <div className="flex justify-end"><Button size="sm" disabled={objectiveBusy||!objectiveTitle.trim()} onClick={()=>void createObjective()}>{objectiveBusy?'Planning…':'Plan Objective'}</Button></div>
-              </div>
+              <ObjectivePlanner key={projectId} projectId={projectId} onCreated={() => loadContext(projectId)} />
               <div className="max-h-96 overflow-auto space-y-3">
                 {objectives.map(o=><div key={o.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
                   <div className="flex items-start justify-between gap-3"><div><div className="text-sm font-medium">{o.title}</div><div className="text-[10px] text-muted-foreground mt-1">Objective #{o.id} · {o.plan?.source||'planned'}</div></div><div className="flex items-center gap-2"><span className="text-[10px] uppercase">{o.status}</span>{!['completed','cancelled'].includes(o.status)&&<Button size="sm" variant="outline" disabled={objectiveExecutingId===o.id} onClick={()=>void executeObjectiveAction(o.id)}>{objectiveExecutingId===o.id?'Executing…':o.status==='active'?'Re-route':'Assemble & Execute'}</Button>}</div></div>

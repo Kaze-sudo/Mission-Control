@@ -23,6 +23,7 @@ import {
   createExecutionApproval,
   authorizeAgentOSTaskDispatch,
   reserveMissionCost,
+  recordActualMissionCost,
   releaseReservationForTask,
   objectiveBudgetState,
 } from '@/lib/execution-authorization'
@@ -435,6 +436,13 @@ describe('hard budget guard + ledger (Phase 7/9/10)', () => {
       VALUES (?, 1, ?, 'actual', 0.42, 210000, 9000, 'gen_abc', 'actual usage recorded from native runtime', 0)`).run(objectiveId, taskIds[0])
     const budget = objectiveBudgetState(objectiveId, workspaceId)
     expect(budget.actual).toBe(0.42)
+  })
+
+  it('preserves sub-cent actual charges in the execution ledger', () => {
+    const { objectiveId, taskIds } = objectiveWithTasks()
+    recordActualMissionCost({ objectiveId, workspaceId, taskId: taskIds[0], amount: 0.000123, inputTokens: 100, outputTokens: 20 })
+    const row = state.db!.prepare("SELECT amount FROM agentos_execution_costs WHERE kind = 'actual'").get() as { amount: number }
+    expect(row.amount).toBe(0.000123)
   })
 
   it('budget exhaustion blocks further missions while earlier ones are reserved', () => {

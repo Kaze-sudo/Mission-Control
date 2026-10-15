@@ -108,11 +108,15 @@ export function decomposeObjective(input: {
     const missions = input.missions.map(manualMissionPlan)
     const keys = new Set(missions.map(mission => mission.key))
     if (keys.size !== missions.length) throw new Error('Objective mission keys must be unique')
+    const earlierKeys = new Set<string>()
     for (const mission of missions) {
+      if (!mission.title) throw new Error('Mission title is required')
       for (const dependency of mission.dependsOnKeys) {
         if (!keys.has(dependency)) throw new Error(`Unknown mission dependency: ${dependency}`)
         if (dependency === mission.key) throw new Error(`Mission ${mission.key} cannot depend on itself`)
+        if (!earlierKeys.has(dependency)) throw new Error(`Mission dependencies must reference earlier missions: ${mission.key}`)
       }
+      earlierKeys.add(mission.key)
     }
     return { title, description, source: 'manual', missions }
   }
@@ -142,6 +146,17 @@ function assertProject(projectId: number, workspaceId: number): void {
     'SELECT id FROM projects WHERE id = ? AND workspace_id = ?',
   ).get(projectId, workspaceId)
   if (!row) throw new Error('Project not found')
+}
+
+export function previewObjectivePlan(input: {
+  projectId: number
+  workspaceId: number
+  title: string
+  description?: string
+  missions?: ObjectiveMissionInput[]
+}): ObjectivePlan {
+  assertProject(input.projectId, input.workspaceId)
+  return decomposeObjective(input)
 }
 
 function missionMetadata(

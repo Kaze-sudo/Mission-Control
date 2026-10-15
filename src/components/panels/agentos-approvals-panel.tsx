@@ -161,7 +161,17 @@ export function AgentOSApprovalsPanel() {
       // The backend refuses missing, stale, or changed fingerprints — surface the real refusal and reload authoritative items
       const msg = refusalMessage(err) || 'Approval failed'
       setError(msg)
-      await load()
+      try {
+        // The queue reads stored previews. Regenerate that cache before loading
+        // it again, otherwise the operator sees the same rejected fingerprint.
+        await apiFetch(`/api/projects/${item.projectId}/agentos-execution`, {
+          method: 'POST', body: JSON.stringify({ objectiveId: item.objectiveId, action: 'refresh' }),
+        })
+        await load()
+      } catch {
+        setError(`${msg} — Plan refresh failed. Open Project Command to refresh before approving again.`)
+        setItems(current => current.filter(candidate => candidate.objectiveId !== item.objectiveId))
+      }
     } finally {
       setBusy(null)
     }
@@ -312,7 +322,7 @@ function ApprovalCard({ item, busy, onApprove, onDeny }: {
           {item.maximumTotalExposure !== null && <span>· max exposure {fmtMoney(item.maximumTotalExposure)}</span>}
           {item.estimatedTotalInputTokens !== null && item.estimatedTotalInputTokens !== undefined && (
             <span className="font-mono text-[10px] text-muted-foreground/80">
-              · ~{Math.round(item.estimatedTotalInputTokens / 1000)}k in / ~{Math.round((item.estimatedTotalOutputTokens || 0) / 1000)}k out tokens (est)
+              · {item.estimatedTotalInputTokens.toLocaleString()} in / {item.estimatedTotalOutputTokens?.toLocaleString() ?? 'Unavailable'} out tokens (est)
             </span>
           )}
         </span>

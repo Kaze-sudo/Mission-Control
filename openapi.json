@@ -16866,6 +16866,15 @@
               "isPartial": {
                 "type": "boolean"
               },
+              "completeness": {
+                "type": "string",
+                "enum": ["partial", "unknown"],
+                "description": "Observed missing fields are partial; otherwise total coverage is unknown because executors do not certify completeness."
+              },
+              "mixedCurrencies": {
+                "type": "boolean",
+                "description": "Multiple currencies were recorded; no combined monetary total is returned."
+              },
               "scope": {
                 "type": "string",
                 "enum": [

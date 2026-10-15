@@ -46,6 +46,8 @@ interface ReviewTelemetry {
   estimatedCurrency: string | null
   costDelta: number | null
   isPartial: boolean
+  completeness: 'partial' | 'unknown'
+  mixedCurrencies: boolean
   scope: 'attempt' | 'task_aggregate' | 'none'
 }
 
@@ -305,19 +307,19 @@ function ReviewCard({ item, busy, onApprove, onReject }: {
       {/* Actual cost & token telemetry */}
       {item.telemetry && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md border border-border/40 bg-background/20 px-3 py-1.5 mb-2 text-[11px]">
-          <span className="text-muted-foreground">Actual Cost:</span>
+          <span className="text-muted-foreground">Recorded cost:</span>
           {item.telemetry.actualCost !== null ? (
             <span className="font-mono text-emerald-300">
-              ${item.telemetry.actualCost.toFixed(2)} {item.telemetry.currency || 'USD'}
+              {item.telemetry.actualCost.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 8 })} {item.telemetry.currency}
               {item.telemetry.isPartial && <span className="text-amber-400 text-[10px] ml-1">(partial)</span>}
             </span>
           ) : (
-            <span className="text-muted-foreground italic">Not recorded</span>
+            <span className="text-muted-foreground italic">{item.telemetry.mixedCurrencies ? 'Mixed currencies — no combined total' : 'Not recorded'}</span>
           )}
 
-          {item.telemetry.inputTokens !== null && (
+          {(item.telemetry.inputTokens !== null || item.telemetry.outputTokens !== null) && (
             <span className="font-mono text-muted-foreground">
-              · {item.telemetry.inputTokens.toLocaleString()} in / {(item.telemetry.outputTokens || 0).toLocaleString()} out tokens
+              · {item.telemetry.inputTokens?.toLocaleString() ?? 'Not recorded'} in / {item.telemetry.outputTokens?.toLocaleString() ?? 'Not recorded'} out tokens
             </span>
           )}
 
@@ -329,6 +331,11 @@ function ReviewCard({ item, busy, onApprove, onReject }: {
 
           {item.telemetry.scope === 'task_aggregate' && (
             <span className="text-[10px] text-muted-foreground/70 ml-auto">(task aggregate)</span>
+          )}
+          {item.telemetry.source !== 'none' && (
+            <span className="text-[10px] text-muted-foreground">
+              {item.telemetry.completeness === 'partial' ? 'Some usage fields are missing' : 'Coverage not confirmed'}
+            </span>
           )}
         </div>
       )}

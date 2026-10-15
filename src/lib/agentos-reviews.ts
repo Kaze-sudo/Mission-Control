@@ -20,7 +20,7 @@ import { objectiveIdFromTaskMetadata } from '@/lib/execution-planning'
  */
 
 export interface ReviewTaskTelemetry {
-  /** Source of telemetry: 'execution_ledger' (agentos_execution_costs), 'token_usage', or 'mixed'. */
+  /** Ledger actuals take precedence over token usage; the two are never added. */
   source: 'execution_ledger' | 'token_usage' | 'none'
   /** Actual settled cost recorded from native runtime/executor. Null = unrecorded/unavailable. */
   actualCost: number | null
@@ -36,6 +36,9 @@ export interface ReviewTaskTelemetry {
   costDelta: number | null
   /** True if only partial attempt or partial records are available. */
   isPartial: boolean
+  /** No writer currently records a complete accounting boundary. */
+  completeness: 'partial' | 'unknown'
+  mixedCurrencies: boolean
   /** Whether telemetry is strictly attempt-bound (matched delegation_id) vs task-aggregate. */
   scope: 'attempt' | 'task_aggregate' | 'none'
 }
@@ -131,20 +134,28 @@ export function listReviewableTasks(
     SELECT title FROM agentos_objectives WHERE id = ? AND workspace_id = ?
   `)
 
-  // Telemetry queries — deduplicated, workspace-isolated, accounting for actual vs reserved
-  const execCostsStmt = db.prepare(`
-    SELECT kind, amount, currency, input_tokens, output_tokens, delegation_id
-    FROM agentos_execution_costs
-    WHERE task_id = ? AND workspace_id = ? AND kind = 'actual'
-  `)
-  const tokenUsageStmt = db.prepare(`
-    SELECT model, input_tokens, output_tokens, cost_usd
-    FROM token_usage
-    WHERE task_id = ? AND workspace_id = ?
-  `)
+  // Fetch accounting once for the bounded visible page, never per review card.
+  const visibleRows = rows.slice(0, limit)
+  type AccountingRow = { task_id: number; amount: number | null; currency: string | null;
+    input_tokens: number | null; output_tokens: number | null; delegation_id: string | null }
+  const ledgerByTask = new Map<number, AccountingRow[]>()
+  const tokensByTask = new Map<number, AccountingRow[]>()
+  if (visibleRows.length) {
+    const ids = visibleRows.map(row => Number(row.id))
+    const placeholders = ids.map(() => '?').join(',')
+    const ledger = db.prepare(`SELECT task_id, amount, currency, input_tokens, output_tokens, delegation_id
+      FROM agentos_execution_costs WHERE workspace_id = ? AND kind = 'actual'
+      AND task_id IN (${placeholders})`).all(workspaceId, ...ids) as AccountingRow[]
+    const tokens = db.prepare(`SELECT task_id, cost_usd AS amount, 'USD' AS currency,
+      input_tokens, output_tokens, NULL AS delegation_id FROM token_usage
+      WHERE workspace_id = ? AND task_id IN (${placeholders})`).all(workspaceId, ...ids) as AccountingRow[]
+    for (const [records, target] of [[ledger, ledgerByTask], [tokens, tokensByTask]] as const) {
+      for (const record of records) target.set(record.task_id, [...(target.get(record.task_id) ?? []), record])
+    }
+  }
 
   const items: ReviewQueueItem[] = []
-  for (const row of rows) {
+  for (const row of visibleRows) {
     const taskId = Number(row.id)
     const review = latestReviewStmt.get(taskId, workspaceId) as
       | { reviewer: string; status: string; notes: string | null; created_at: number | null }
@@ -192,128 +203,36 @@ export function listReviewableTasks(
       ? ((objectiveTitleStmt.get(objectiveId, workspaceId) as { title?: string } | undefined)?.title ?? null)
       : null
 
-    // Telemetry resolution:
-    // Priority 1: agentos_execution_costs (kind = 'actual')
-    // Priority 2: token_usage
-    // Deduplication rule: Never sum both sources for the same task.
-    const actualCostRows = execCostsStmt.all(taskId, workspaceId) as Array<{
-      kind: string
-      amount: number
-      currency: string
-      input_tokens: number | null
-      output_tokens: number | null
-      delegation_id: string | null
-    }>
-
-    let estimatedCost: number | null = null
-    let estimatedCurrency: string | null = 'USD'
-    if (taskMetadata?.agentos_execution && typeof taskMetadata.agentos_execution === 'object') {
-      const execMeta = taskMetadata.agentos_execution as Record<string, unknown>
-      if (typeof execMeta.estimatedCost === 'number' && Number.isFinite(execMeta.estimatedCost)) {
-        estimatedCost = execMeta.estimatedCost
-      }
+    // Row presence does not prove all executor usage was reported. Keep recorded
+    // subtotals, but never present an unproven estimate/actual comparison.
+    const ledger = ledgerByTask.get(taskId) ?? []
+    const records = ledger.length ? ledger : (tokensByTask.get(taskId) ?? [])
+    const valid = (value: unknown): value is number =>
+      typeof value === 'number' && Number.isFinite(value) && value >= 0
+    const sum = (key: 'amount' | 'input_tokens' | 'output_tokens'): number | null => {
+      const values = records.map(row => row[key]).filter(valid)
+      return values.length ? values.reduce((total, value) => total + value, 0) : null
     }
-
-    let telemetry: ReviewTaskTelemetry
-    if (actualCostRows.length > 0) {
-      // Check if rows are single currency or mixed
-      const currencies = new Set(actualCostRows.map(r => r.currency || 'USD'))
-      const singleCurrency = currencies.size === 1 ? [...currencies][0] : null
-      
-      const delegationId = delegation?.id ?? null
-      const attemptRows = delegationId ? actualCostRows.filter(r => r.delegation_id === delegationId) : []
-      const isAttemptBound = attemptRows.length > 0 && attemptRows.length === actualCostRows.length
-
-      let totalCost: number | null = null
-      if (singleCurrency) {
-        totalCost = Math.round(actualCostRows.reduce((acc, r) => acc + (Number(r.amount) || 0), 0) * 100) / 100
-      }
-
-      let inTokens: number | null = null
-      let outTokens: number | null = null
-      let hasTokens = false
-      for (const r of actualCostRows) {
-        if (typeof r.input_tokens === 'number') {
-          inTokens = (inTokens || 0) + r.input_tokens
-          hasTokens = true
-        }
-        if (typeof r.output_tokens === 'number') {
-          outTokens = (outTokens || 0) + r.output_tokens
-          hasTokens = true
-        }
-      }
-
-      const costDelta = (totalCost !== null && estimatedCost !== null && singleCurrency === (estimatedCurrency || 'USD'))
-        ? Math.round((totalCost - estimatedCost) * 100) / 100
-        : null
-
-      telemetry = {
-        source: 'execution_ledger',
-        actualCost: totalCost,
-        currency: singleCurrency,
-        inputTokens: hasTokens ? inTokens : null,
-        outputTokens: hasTokens ? outTokens : null,
-        estimatedCost,
-        estimatedCurrency,
-        costDelta,
-        isPartial: !singleCurrency || (delegation != null && delegation.attempt != null && delegation.attempt > 1 && !isAttemptBound),
-        scope: isAttemptBound ? 'attempt' : 'task_aggregate',
-      }
-    } else {
-      // Fallback to token_usage
-      const tokenRows = tokenUsageStmt.all(taskId, workspaceId) as Array<{
-        model: string
-        input_tokens: number | null
-        output_tokens: number | null
-        cost_usd: number | null
-      }>
-
-      if (tokenRows.length > 0) {
-        let totalCostUsd: number | null = null
-        let inTokens = 0
-        let outTokens = 0
-        let hasCost = false
-
-        for (const r of tokenRows) {
-          if (typeof r.cost_usd === 'number' && Number.isFinite(r.cost_usd)) {
-            totalCostUsd = (totalCostUsd || 0) + r.cost_usd
-            hasCost = true
-          }
-          inTokens += Number(r.input_tokens || 0)
-          outTokens += Number(r.output_tokens || 0)
-        }
-
-        const formattedCost = hasCost ? Math.round(totalCostUsd! * 100) / 100 : null
-        const costDelta = (formattedCost !== null && estimatedCost !== null)
-          ? Math.round((formattedCost - estimatedCost) * 100) / 100
-          : null
-
-        telemetry = {
-          source: 'token_usage',
-          actualCost: formattedCost,
-          currency: 'USD',
-          inputTokens: inTokens,
-          outputTokens: outTokens,
-          estimatedCost,
-          estimatedCurrency,
-          costDelta,
-          isPartial: false,
-          scope: 'task_aggregate',
-        }
-      } else {
-        telemetry = {
-          source: 'none',
-          actualCost: null,
-          currency: null,
-          inputTokens: null,
-          outputTokens: null,
-          estimatedCost,
-          estimatedCurrency,
-          costDelta: null,
-          isPartial: false,
-          scope: 'none',
-        }
-      }
+    const currencies = new Set(records.map(row => row.currency).filter((value): value is string => !!value))
+    const mixedCurrencies = currencies.size > 1
+    const currency = currencies.size === 1 && records.every(row => !!row.currency) ? [...currencies][0] : null
+    const isPartial = records.some(row => !valid(row.amount) || !valid(row.input_tokens) || !valid(row.output_tokens) || !row.currency)
+    const isAttemptBound = !!delegation && records.length > 0 && records.every(row => row.delegation_id === delegation.id)
+    const execMeta = taskMetadata?.agentos_execution as Record<string, unknown> | undefined
+    const estimatedCost = valid(execMeta?.estimatedCost) ? execMeta.estimatedCost : null
+    const telemetry: ReviewTaskTelemetry = {
+      source: ledger.length ? 'execution_ledger' : records.length ? 'token_usage' : 'none',
+      actualCost: currency ? sum('amount') : null,
+      currency,
+      inputTokens: sum('input_tokens'),
+      outputTokens: sum('output_tokens'),
+      estimatedCost,
+      estimatedCurrency: estimatedCost !== null ? 'USD' : null,
+      costDelta: null,
+      isPartial,
+      completeness: isPartial ? 'partial' : 'unknown',
+      mixedCurrencies,
+      scope: !records.length ? 'none' : isAttemptBound ? 'attempt' : 'task_aggregate',
     }
 
     items.push({
@@ -339,11 +258,11 @@ export function listReviewableTasks(
     })
   }
 
-  const awaitingHumanReview = items.filter(i => i.taskStatus === 'review').length
-  const aegisReviewing = items.filter(i => i.taskStatus === 'quality_review').length
+  const awaitingHumanReview = rows.filter(row => row.status === 'review').length
+  const aegisReviewing = rows.filter(row => row.status === 'quality_review').length
 
   return {
     items: items.slice(0, limit),
-    summary: { total: items.length, awaitingHumanReview, aegisReviewing },
+    summary: { total: rows.length, awaitingHumanReview, aegisReviewing },
   }
 }
