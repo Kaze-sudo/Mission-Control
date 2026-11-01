@@ -491,7 +491,7 @@ export function ProjectCommandPanel() {
                 <div><p className="text-xs font-mono uppercase tracking-wider text-primary">Objectives</p><h2 className="text-lg font-semibold mt-1">Company objectives</h2></div>
                 <span className="text-xs text-muted-foreground">{objectives.length} recorded</span>
               </div>
-              {projectId ? <ObjectivePlanner key={projectId} projectId={projectId} onCreated={() => loadContext(projectId)} /> : null}
+              <ObjectivePlanner key={projectId} projectId={projectId} onCreated={() => loadContext(projectId)} />
               <div className="max-h-96 overflow-auto space-y-3">
                 {objectives.map(o=><div key={o.id} className="rounded-lg border border-border/50 bg-background/40 p-3">
                   <div className="flex items-start justify-between gap-3"><div><div className="text-sm font-medium">{o.title}</div><div className="text-[10px] text-muted-foreground mt-1">Objective #{o.id} · {o.plan?.source||'planned'}</div></div><div className="flex items-center gap-2"><span className="text-[10px] uppercase">{o.status}</span>{!['completed','cancelled'].includes(o.status)&&<Button size="sm" variant="outline" disabled={objectiveExecutingId===o.id} onClick={()=>void executeObjectiveAction(o.id)}>{objectiveExecutingId===o.id?'Executing…':o.status==='active'?'Re-route':'Assemble & Execute'}</Button>}</div></div>
