@@ -15,13 +15,12 @@ Persistent board tracking remaining work and completed Operator UX features.
 
 ## Ready
 
-- MC-H01 AgentOS Reviews Test Coverage (P0)
 - MC-H02 Full Regression Verification (P0)
 - MC-H03 Operator Panels End-to-End Contract Audit (P0)
 
 ## In Progress
 
-(none)
+- MC-H01 AgentOS Reviews Test Coverage (P0)
 
 ## Review
 
