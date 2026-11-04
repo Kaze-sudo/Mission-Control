@@ -47,6 +47,27 @@ export function extractClientIp(request: Request): string {
   return extractClientIpFromTrusted(request, TRUSTED_PROXIES)
 }
 
+/**
+ * E2E/CI bypass policy for the rate limiters.
+ *
+ * `MC_DISABLE_RATE_LIMIT=1` is a runtime operator convenience for E2E rigs.
+ * - Non-critical limiters: disabled whenever the flag is set, except in a
+ *   plain production deployment (no explicit opt-in), where it is ignored.
+ * - Critical limiters (login brute-force protection): enforcement must stay
+ *   observable from the Playwright suite, so they bypass only when
+ *   `MISSION_CONTROL_TEST_MODE=1` is ALSO set AND the request carries no
+ *   client-IP context (no `x-real-ip`, no trusted proxies) - the shared
+ *   "unknown" bucket every browser/UI request falls into. Requests that
+ *   present an explicit `x-real-ip` (e.g. `tests/rate-limiting.spec.ts`, which
+ *   verifies the limiter end-to-end) keep real enforcement regardless.
+ */
+function rateLimitBypassActive(ip: string, critical?: boolean): boolean {
+  if (process.env.MC_DISABLE_RATE_LIMIT !== '1') return false
+  const testMode = process.env.MISSION_CONTROL_TEST_MODE === '1'
+  if (!critical) return testMode || process.env.NODE_ENV !== 'production'
+  return testMode && ip === 'unknown'
+}
+
 export function createRateLimiter(options: RateLimiterOptions) {
   const store = new Map<string, RateLimitEntry>()
   const maxEntries = options.maxEntries ?? DEFAULT_MAX_ENTRIES
@@ -62,10 +83,8 @@ export function createRateLimiter(options: RateLimiterOptions) {
   if (cleanupInterval.unref) cleanupInterval.unref()
 
   return function checkRateLimit(request: Request): NextResponse | null {
-    // Allow disabling non-critical rate limiting for E2E tests
-    // In CI, standalone server runs with NODE_ENV=production but needs rate limit bypass
-    if (process.env.MC_DISABLE_RATE_LIMIT === '1' && !options.critical && (process.env.NODE_ENV !== 'production' || process.env.MISSION_CONTROL_TEST_MODE === '1')) return null
     const ip = extractClientIp(request)
+    if (rateLimitBypassActive(ip, options.critical)) return null
     const now = Date.now()
     const entry = store.get(ip)
 
