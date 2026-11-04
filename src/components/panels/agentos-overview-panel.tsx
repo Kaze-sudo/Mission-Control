@@ -109,7 +109,7 @@ function Chip({ children, tone = 'neutral', title }: { children: React.ReactNode
 }
 
 /** Compact deep-linkable operator queue card (Overview command center). */
-function QueueCard({ label, value, tone, onClick }: { label: string; value: number; tone: 'good' | 'warn' | 'bad' | 'info' | 'neutral'; onClick: () => void }) {
+function QueueCard({ label, value, tone, onClick, unavailable = false }: { label: string; value: number; tone: 'good' | 'warn' | 'bad' | 'info' | 'neutral'; onClick: () => void; unavailable?: boolean }) {
   const tones: Record<string, string> = {
     good: 'text-emerald-400',
     warn: 'text-amber-300',
@@ -130,7 +130,11 @@ function QueueCard({ label, value, tone, onClick }: { label: string; value: numb
       onClick={onClick}
       className={`rounded-lg border border-border/50 bg-background/40 px-3 py-2 text-left transition-colors cursor-pointer ${highlight[tone]}`}
     >
-      <div className={`text-xl font-semibold tabular-nums leading-tight ${tone === 'neutral' ? 'text-muted-foreground' : tones[tone]}`}>{value}</div>
+      <div className={`text-xl font-semibold tabular-nums leading-tight ${tone === 'neutral' ? 'text-muted-foreground' : tones[tone]}`}>
+        {unavailable
+          ? <span className="text-xs font-medium uppercase tracking-wider" title="Queue read failed — current count unavailable">Unavailable</span>
+          : value}
+      </div>
       <div className="text-[10px] uppercase tracking-wider text-muted-foreground/70 truncate">{label}</div>
     </button>
   )
@@ -154,20 +158,30 @@ export function AgentOSOverviewPanel() {
   const [status, setStatus] = useState<AgentOSStatus | null>(null)
   const [runSummary, setRunSummary] = useState<Record<string, number>>({})
   const [approvalsWaiting, setApprovalsWaiting] = useState(0)
+  // Companion reads stay best-effort (a failed read must not blank the whole
+  // panel), but each failure is surfaced per-queue instead of rendering as 0.
+  const [runsUnavailable, setRunsUnavailable] = useState(false)
+  const [approvalsUnavailable, setApprovalsUnavailable] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [loaded, setLoaded] = useState(false)
 
   const refresh = useCallback(async () => {
     try {
-      const [statusData, runsData, approvalsData] = await Promise.all([
+      const [statusData, runsResult, approvalsResult] = await Promise.all([
         apiFetch<{ status?: AgentOSStatus }>('/api/agentos/status'),
-        apiFetch<RunSummary>('/api/agentos/runs?limit=250').catch(() => null),
-        apiFetch<{ summary?: { total: number } }>('/api/agentos/approvals?limit=1').catch(() => null),
+        apiFetch<RunSummary>('/api/agentos/runs?limit=250')
+          .then(data => ({ data, failed: false as const }))
+          .catch(() => ({ data: null, failed: true as const })),
+        apiFetch<{ summary?: { total: number } }>('/api/agentos/approvals?limit=1')
+          .then(data => ({ data, failed: false as const }))
+          .catch(() => ({ data: null, failed: true as const })),
       ])
       setStatus(statusData.status || null)
       setError(null)
       // Operator queue strip — canonical run feed + approval queue summaries.
-      const byState = runsData?.summary?.byState || {}
+      setRunsUnavailable(runsResult.failed)
+      setApprovalsUnavailable(approvalsResult.failed)
+      const byState = runsResult.data?.summary?.byState || {}
       setRunSummary({
         RUNNING: byState.RUNNING || 0,
         QUEUED: (byState.QUEUED || 0) + (byState.WAITING || 0),
@@ -175,7 +189,7 @@ export function AgentOSOverviewPanel() {
         REVIEWING: (byState.REVIEWING || 0) + (byState.RETRYING || 0),
         FAILED: byState.FAILED || 0,
       })
-      setApprovalsWaiting(approvalsData?.summary?.total ?? 0)
+      setApprovalsWaiting(approvalsResult.data?.summary?.total ?? 0)
     } catch {
       setError('AgentOS status unavailable')
     } finally {
@@ -248,16 +262,17 @@ export function AgentOSOverviewPanel() {
         <div className="grid gap-4 p-4 xl:grid-cols-2">
           {/* Operator queues — compact deep links (Phase 11: Overview as command center) */}
           <div className="xl:col-span-2 grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-6">
-            <QueueCard label="Approvals waiting" value={approvalsWaiting} tone={approvalsWaiting > 0 ? 'info' : 'neutral'} onClick={() => navigateToPanel('approvals')} />
-            <QueueCard label="Active runs" value={runSummary.RUNNING || 0} tone={runSummary.RUNNING ? 'good' : 'neutral'} onClick={() => navigateToPanel('runs')} />
-            <QueueCard label="Queued" value={runSummary.QUEUED || 0} tone={(runSummary.QUEUED || 0) > 0 ? 'info' : 'neutral'} onClick={() => navigateToPanel('runs')} />
+            <QueueCard label="Approvals waiting" value={approvalsWaiting} tone={approvalsWaiting > 0 ? 'info' : 'neutral'} onClick={() => navigateToPanel('approvals')} unavailable={approvalsUnavailable} />
+            <QueueCard label="Active runs" value={runSummary.RUNNING || 0} tone={runSummary.RUNNING ? 'good' : 'neutral'} onClick={() => navigateToPanel('runs')} unavailable={runsUnavailable} />
+            <QueueCard label="Queued" value={runSummary.QUEUED || 0} tone={(runSummary.QUEUED || 0) > 0 ? 'info' : 'neutral'} onClick={() => navigateToPanel('runs')} unavailable={runsUnavailable} />
             <QueueCard label="Reviewing" value={runSummary.REVIEWING || 0} tone={(runSummary.REVIEWING || 0) > 0 ? 'info' : 'neutral'} onClick={() => navigateToPanel('reviews')} />
-            <QueueCard label="Failed" value={runSummary.FAILED || 0} tone={(runSummary.FAILED || 0) > 0 ? 'bad' : 'neutral'} onClick={() => navigateToPanel('runs')} />
+            <QueueCard label="Failed" value={runSummary.FAILED || 0} tone={(runSummary.FAILED || 0) > 0 ? 'bad' : 'neutral'} onClick={() => navigateToPanel('runs')} unavailable={runsUnavailable} />
             <QueueCard
               label="Held / blocked"
               value={(runSummary.HELD || 0) + (status.command.states['paused'] ?? 0) + (status.command.states['blocked'] ?? 0)}
               tone={(runSummary.HELD || 0) + (status.command.states['paused'] ?? 0) + (status.command.states['blocked'] ?? 0) > 0 ? 'warn' : 'neutral'}
               onClick={() => navigateToPanel('runs')}
+              unavailable={runsUnavailable}
             />
           </div>
           {/* Column: hosts + command */}
