@@ -13,6 +13,9 @@ Persistent board tracking remaining work and completed Operator UX features.
     - Per-read availability state in `AgentOSOverviewPanel`: failed `/api/agentos/runs` marks Active runs / Queued / Reviewing / Failed / Held-blocked "Unavailable"; failed `/api/agentos/approvals` marks "Approvals waiting" "Unavailable"; successful reads keep exact counts (0 stays 0). Panel Refresh after recovery replaces "Unavailable" with the real value.
     - Regression: `tests/agentos-overview-approval-fallback.spec.ts` (isolated local harness; 2 passed). Pre-fix run observed the falsifying counts: approvals card "0Approvals waiting" after mocked 500 with healthy 3/4 runs; runs card "0Active runs" after mocked 500 with truthful approvals 0.
     - Wider MC-H08 card stays open (remaining error/empty-state polish).
+  - Runs panel polish DONE (2026-11-03, HEAD ea8a053): filtered-empty vs no-runs split in `AgentOSRunsPanel` — with state/project/ecosystem/agent filters active the empty state now says "No AgentOS runs match the current ... filters. Clear or widen ..."; with no filters it says "No AgentOS runs yet. Plan and execute an objective ...". A "Clear filters" control appears in the panel header whenever any filter is active.
+  - Project Command polish DONE (2026-11-03, HEAD ea8a053): explicit no-projects empty block in `ProjectCommandPanel` — zero projects now renders "No projects yet. Create a project, then return here ..." instead of only the header plus the select's "No projects" option.
+    - Verified via typecheck (exit 0) and eslint on both touched files (exit 0); panels normalized to HEAD blob LF endings so diffs are semantic-only (runs 13 ± / projects +5). Browser-regression coverage for these two empty states remains part of the wider open MC-H08 card.
 - MC-H09 Documentation Cleanup (P2)
 - MC-H10 Accessibility / UI Consistency Audit (P2)
 - MC-H11 Claude Executor Validation (P2)

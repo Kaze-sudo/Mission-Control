@@ -388,6 +388,11 @@ export function ProjectCommandPanel() {
       {projectUrlNotice&&<div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">{projectUrlNotice}</div>}
       {error&&<div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">{error}</div>}
       {loading&&<div className="text-sm text-muted-foreground">Loading command picture…</div>}
+      {!loading&&!command&&!error&&(
+        projects.length===0
+          ? <div className="rounded-xl border border-border bg-card p-4 text-sm text-muted-foreground">No projects yet. Create a project, then return here to activate it, bind agents, and control routing policy.</div>
+          : <div className="text-sm text-muted-foreground">Select a project to load its command picture.</div>
+      )}
       {!loading&&command&&(
         <>
           <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">

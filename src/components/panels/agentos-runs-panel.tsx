@@ -313,6 +313,11 @@ export function AgentOSRunsPanel() {
             </Button>
           )}
           <Button size="sm" variant="outline" disabled={loading} onClick={() => void load()}>{loading ? 'Refreshing…' : 'Refresh'}</Button>
+          {stateFilter !== 'ALL' || projectFilter !== '' || ecosystemFilter !== '' || agentQuery.trim() !== '' && (
+            <Button size="sm" variant="ghost" onClick={() => { setStateFilter('ALL'); setProjectFilter(''); setEcosystemFilter(''); setAgentQuery('') }}>
+              Clear filters
+            </Button>
+          )}
         </div>
       </div>
 
@@ -363,7 +368,13 @@ export function AgentOSRunsPanel() {
         {loading && runs.length === 0 ? (
           <div className="text-sm text-muted-foreground">Loading execution runs…</div>
         ) : runs.length === 0 ? (
-          <div className="text-sm text-muted-foreground">No AgentOS runs match the current view. Plan and execute an objective from Project Command to see live execution here.</div>
+          stateFilter !== 'ALL' || projectFilter !== '' || ecosystemFilter !== '' || agentQuery.trim() !== '' ? (
+            <div className="text-sm text-muted-foreground">
+              No AgentOS runs match the current state, project, ecosystem, or agent filters. Clear or widen the filters above — or plan and execute an objective from Project Command.
+            </div>
+          ) : (
+            <div className="text-sm text-muted-foreground">No AgentOS runs yet. Plan and execute an objective from Project Command to see live execution here.</div>
+          )
         ) : (
           <div className="space-y-2">
             {runs.map(run => {
