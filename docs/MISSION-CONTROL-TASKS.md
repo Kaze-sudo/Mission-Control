@@ -36,7 +36,7 @@ Persistent board tracking remaining work and completed Operator UX features.
 
 ## Ready
 
-- MC-H03 Operator Panels End-to-End Contract Audit (P0)
+(none)
 
 ## In Progress
 
@@ -79,3 +79,11 @@ Persistent board tracking remaining work and completed Operator UX features.
   - api:parity exit 0 (300 route operations == 300 openapi operations, 0 ignored); full Playwright suite 518 passed / 1 skipped / 4 failed, all four the documented critical loginLimiter test pressure with both failing files 5/5 green on isolation rerun - no panel, harness, or production defect.
   - Offline OpenClaw harness `pnpm run test:e2e:openclaw:local` 4/4 at HEAD 0088b10 (Claude capability assertion now satisfiable via seeded runtime .claude/projects).
   - Out of gate scope: the AgentOS live E2E harness (deterministic live executor path) is not part of the local gate per prior record, and a one-shot-green full Playwright suite remains deferred on a harness env knob for the critical login limiter.
+- MC-H03 Operator Panels End-to-End Contract Audit (P0) DONE (2026-11-03, audited at HEAD 74f2ae4): re-run of the full card on the current branch after the MC-H08 panel changes - all five panels behave truthfully against real API state and the card's three MC-H08 findings are closed on this branch.
+  - Overview (`agentos-overview-panel.tsx`): navigation-only; honest per-read availability - failed `/api/agentos/runs` marks runs-dependent counters "Unavailable" and failed `/api/agentos/approvals` marks "Approvals waiting"; successful reads keep exact counts; Refresh replaces "Unavailable" with real values (verified by `tests/agentos-overview-approval-fallback.spec.ts`, 2/2).
+  - Runs (`agentos-runs-panel.tsx`): distinct loading/true-empty/filtered-empty states with the Clear filters control; retry/cancel POST the authoritative `/api/agentos/runs` and structured refusals surface from `ApiError.payload`; state coverage from `tests/agentos-empty-states.spec.ts` (3/3).
+  - Approvals (`agentos-approvals-panel.tsx`) and Reviews (`agentos-reviews-panel.tsx`): failed first reads never co-render the "no work ..." claim (`error ? null : claim`) - only the role=alert does; genuine empties keep the claim; healthy reads keep card + live badge; non-matching filter tabs show the distinct filtered-empty message; approve/deny POST the authoritative routes (`/api/projects/[id]/agentos-execution`, `/api/quality-review` with non-empty reject reason); coverage `tests/agentos-approvals-reviews-empty-states.spec.ts` (4/4) and the approve-path lifecycle `tests/quality-review.spec.ts` (6/6).
+  - Project Command (`project-command-panel.tsx`): "Loading command picture..." clears on context load; explicit "No projects yet" block for zero projects; every mutation still posts its authoritative endpoint (code-verified); state coverage in `tests/agentos-empty-states.spec.ts` (3/3).
+  - Counts reconcile (code-verified on this branch): `agentos-runs.ts` computes `summary.byState` over the full set before slicing (L445-449); approval `summary.total: items.length` (L224) and review counts derive from the full rows; the Overview queue strip's limited fetches still receive workspace-wide totals.
+  - Evidence commands (all per-file, fresh harness + fresh login-limiter window): 15/15 panel-regression tests green across the four specs above; full Playwright suite recorded 518 passed / 1 skipped / 4 failed at this same code base (b281f64) with the four failures being the documented `critical` loginLimiter test pressure (isolation-green). Note: batching multiple panel specs in one invocation now also concentrates enough login POSTs to trip the critical limiter - the deferred test-mode limiter knob is the systemic fix.
+  - Checks: no production code changed by this audit; the tree's current standalone artifact serves HEAD (rebuilt at 0088b10 run).
