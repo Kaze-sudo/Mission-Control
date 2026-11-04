@@ -14,7 +14,7 @@ test.describe('Quality Review', () => {
   // ── POST /api/quality-review ─────────────────
 
   test('POST creates review for existing task', async ({ request }) => {
-    const { id: taskId } = await createTestTask(request)
+    const { id: taskId } = await createTestTask(request, { status: 'review' })
     cleanup.push(taskId)
 
     const res = await request.post('/api/quality-review', {
@@ -59,7 +59,7 @@ test.describe('Quality Review', () => {
   // ── GET /api/quality-review ──────────────────
 
   test('GET returns reviews for taskId', async ({ request }) => {
-    const { id: taskId } = await createTestTask(request)
+    const { id: taskId } = await createTestTask(request, { status: 'review' })
     cleanup.push(taskId)
 
     // Create a review first
@@ -84,8 +84,8 @@ test.describe('Quality Review', () => {
   })
 
   test('GET batch lookup by taskIds', async ({ request }) => {
-    const { id: taskId1 } = await createTestTask(request)
-    const { id: taskId2 } = await createTestTask(request)
+    const { id: taskId1 } = await createTestTask(request, { status: 'review' })
+    const { id: taskId2 } = await createTestTask(request, { status: 'review' })
     cleanup.push(taskId1, taskId2)
 
     // Create review for task1
