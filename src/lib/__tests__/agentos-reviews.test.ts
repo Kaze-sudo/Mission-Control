@@ -473,7 +473,7 @@ describe('listReviewableTasks', () => {
     })
   })
 
-  it('handles review with null notes and null createdAt', () => {
+  it('handles review with null notes', () => {
       const db = state.db!
       insertProject(db, 16, 'NullReview')
       insertTask(db, { id: 97, title: 'Review with null fields', status: 'review', projectId: 16 })
@@ -485,7 +485,8 @@ describe('listReviewableTasks', () => {
       expect(item.review?.reviewer).toBe('aegis')
       expect(item.review?.status).toBe('approved')
       expect(item.review?.notes).toBeNull()
-      expect(item.review?.createdAt).toBeNull()
+      // created_at is NOT NULL in the schema; the read model preserves the stored row value.
+      expect(item.review?.createdAt).toBe(3000)
     })
 
   it('handles delegation with all null optional fields', () => {

@@ -57,28 +57,29 @@ it('discards the previous project draft when mounted with the new project key', 
   expect(api).toHaveBeenCalledTimes(1)
 })
 
-it('shows validation errors from API when mission title is empty', async () => {
-  api.mockResolvedValueOnce({ plan }).mockRejectedValueOnce(new Error('Mission title is required'))
+// With an empty mission title the Create button is disabled client-side - no API
+// call, no alert; the API validation-error path stays covered by the creation-fails test.
+it('blocks creation when a mission title is empty', async () => {
+  api.mockResolvedValueOnce({ plan })
   const onCreated = vi.fn()
   render(<ObjectivePlanner projectId={7} onCreated={onCreated} />)
   await preview()
   // Create a mission with empty title by clearing the title field
   fireEvent.change(screen.getAllByLabelText('Mission title')[0], { target: { value: '' } })
+  expect(screen.getByRole('button', { name: 'Create Objective (2 missions)' })).toBeDisabled()
   fireEvent.click(screen.getByRole('button', { name: 'Create Objective (2 missions)' }))
-  // Wait for error to appear
-  expect(await screen.findByRole('alert')).toHaveTextContent('Mission title is required')
-  // Verify onCreated was not called
+  expect(api).toHaveBeenCalledTimes(1) // only the preview call
   expect(onCreated).not.toHaveBeenCalled()
 })
 
-it('shows validation errors from API when objective title is empty', async () => {
-  api.mockResolvedValueOnce({ plan }).mockRejectedValueOnce(new Error('Objective title is required'))
+// With an empty objective title the Preview button is disabled client-side;
+// no API call can be made until an objective title exists.
+it('blocks preview when the objective title is empty', async () => {
+  api.mockResolvedValueOnce({ plan })
   const onCreated = vi.fn()
   render(<ObjectivePlanner projectId={7} onCreated={onCreated} />)
-  // Try to create without filling title
   fireEvent.click(screen.getByRole('button', { name: 'Preview Missions' }))
-  // Wait for error to appear
-  expect(await screen.findByRole('alert')).toHaveTextContent('Objective title is required')
-  // Verify onCreated was not called
+  expect(screen.getByRole('button', { name: 'Preview Missions' })).toBeDisabled()
+  expect(api).not.toHaveBeenCalled()
   expect(onCreated).not.toHaveBeenCalled()
 })
