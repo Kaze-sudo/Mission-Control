@@ -40,7 +40,7 @@ Persistent board tracking remaining work and completed Operator UX features.
 
 ## In Progress
 
-- MC-H01 AgentOS Reviews Test Coverage (P0)
+(none)
 
 ## Review
 
@@ -73,6 +73,7 @@ Persistent board tracking remaining work and completed Operator UX features.
 - Cost tracking and token usage analytics
 - Security scanning and audit trails
 - Real-time polling and WebSocket support
+- MC-H01 AgentOS Reviews Test Coverage (P0) DONE (2026-11-03, commit 48c9f48): closed the remaining review-test gaps (approve/reject, invalid/missing records, route contract behavior) in `src/lib/__tests__/agentos-reviews.test.ts`; 36/36 after the MC-H02 gate repaired its one schema-contradicted assertion.
 - MC-H02 Full Regression Verification (P0) DONE (2026-11-03, HEAD 0088b10):
   - lint (pnpm lint) exit 0; typecheck (tsc --noEmit) exit 0; unit suite 217 files / 1979 tests green (after repairing three tests that were committed red in the MC-H01 commits - see MC-H08 gate note); production build exit 0 with standalone artifact prepared.
   - api:parity exit 0 (300 route operations == 300 openapi operations, 0 ignored); full Playwright suite 518 passed / 1 skipped / 4 failed, all four the documented critical loginLimiter test pressure with both failing files 5/5 green on isolation rerun - no panel, harness, or production defect.
