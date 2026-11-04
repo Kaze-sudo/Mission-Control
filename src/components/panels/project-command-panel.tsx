@@ -165,7 +165,9 @@ export function ProjectCommandPanel() {
   }
 
   const loadContext=useCallback(async(id:number|null)=>{
-    if(!id){setCommand(null);setBindings([]);setTasks([]);setHandoffs([]);setForce(null);setObjectives([]);setDelegations([]);setRoster([]);setRosterSummary(null);return}
+    // A workspace with zero projects has no context to load - but the panel
+    // must still reach its rendered (empty) state, so clear loading here too.
+    if(!id){setCommand(null);setBindings([]);setTasks([]);setHandoffs([]);setForce(null);setObjectives([]);setDelegations([]);setRoster([]);setRosterSummary(null);setLoading(false);return}
     setLoading(true);setError(null)
     try{
       const [c,b,t,h,f,o,d,r]=await Promise.all([

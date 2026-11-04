@@ -313,7 +313,7 @@ export function AgentOSRunsPanel() {
             </Button>
           )}
           <Button size="sm" variant="outline" disabled={loading} onClick={() => void load()}>{loading ? 'Refreshing…' : 'Refresh'}</Button>
-          {stateFilter !== 'ALL' || projectFilter !== '' || ecosystemFilter !== '' || agentQuery.trim() !== '' && (
+          {(stateFilter !== 'ALL' || projectFilter !== '' || ecosystemFilter !== '' || agentQuery.trim() !== '') && (
             <Button size="sm" variant="ghost" onClick={() => { setStateFilter('ALL'); setProjectFilter(''); setEcosystemFilter(''); setAgentQuery('') }}>
               Clear filters
             </Button>
