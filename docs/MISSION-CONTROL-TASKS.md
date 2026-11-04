@@ -36,7 +36,6 @@ Persistent board tracking remaining work and completed Operator UX features.
 
 ## Ready
 
-- MC-H02 Full Regression Verification (P0)
 - MC-H03 Operator Panels End-to-End Contract Audit (P0)
 
 ## In Progress
@@ -74,3 +73,8 @@ Persistent board tracking remaining work and completed Operator UX features.
 - Cost tracking and token usage analytics
 - Security scanning and audit trails
 - Real-time polling and WebSocket support
+- MC-H02 Full Regression Verification (P0) DONE (2026-11-03, HEAD 0088b10):
+  - lint (pnpm lint) exit 0; typecheck (tsc --noEmit) exit 0; unit suite 217 files / 1979 tests green (after repairing three tests that were committed red in the MC-H01 commits - see MC-H08 gate note); production build exit 0 with standalone artifact prepared.
+  - api:parity exit 0 (300 route operations == 300 openapi operations, 0 ignored); full Playwright suite 518 passed / 1 skipped / 4 failed, all four the documented critical loginLimiter test pressure with both failing files 5/5 green on isolation rerun - no panel, harness, or production defect.
+  - Offline OpenClaw harness `pnpm run test:e2e:openclaw:local` 4/4 at HEAD 0088b10 (Claude capability assertion now satisfiable via seeded runtime .claude/projects).
+  - Out of gate scope: the AgentOS live E2E harness (deterministic live executor path) is not part of the local gate per prior record, and a one-shot-green full Playwright suite remains deferred on a harness env knob for the critical login limiter.
