@@ -229,7 +229,9 @@ export function AgentOSReviewsPanel() {
       ) : filtered.length === 0 ? (
         <div className="text-center py-12 text-muted-foreground text-sm">
           {items.length === 0
-            ? 'No work is awaiting review. Executor output routed into review will appear here.'
+            // MC-H08: never render a failed read as "no work" - the role=alert
+            // above already states the failure, and the poll will retry.
+            ? error ? null : 'No work is awaiting review. Executor output routed into review will appear here.'
             : `No items match the "${statusFilter}" filter.`}
         </div>
       ) : (
