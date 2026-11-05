@@ -41,6 +41,10 @@ const openCodeDir = path.join(runtimeRoot, '.local', 'share', 'opencode')
 const openCodeDbPath = path.join(openCodeDir, 'opencode-e2e.db')
 const mockBinDir = path.join(repoRoot, 'scripts', 'e2e-openclaw', 'bin')
 const skillsRoot = path.join(runtimeRoot, 'skills')
+// Claude Code home for the offline harness: /api/status derives `claudeHome`
+// from existsSync(<claudeHome>/projects), so seed one under the runtime root
+// instead of depending on the host's real ~/.claude.
+const claudeHomeDir = path.join(runtimeRoot, '.claude')
 
 function findStandaloneServer(root) {
   const direct = path.join(root, '.next', 'standalone', 'server.js')
@@ -87,6 +91,7 @@ fs.rmSync(runtimeRoot, { recursive: true, force: true })
 fs.mkdirSync(runtimeRoot, { recursive: true })
 fs.mkdirSync(dataDir, { recursive: true })
 fs.mkdirSync(openCodeDir, { recursive: true })
+fs.mkdirSync(path.join(claudeHomeDir, 'projects'), { recursive: true })
 fs.cpSync(fixtureSource, runtimeRoot, { recursive: true })
 
 const openCodeDb = new Database(openCodeDbPath)
@@ -205,6 +210,7 @@ const baseEnv = {
   OPENCLAW_GATEWAY_HOST: gatewayHost,
   OPENCLAW_GATEWAY_PORT: gatewayPort,
   OPENCLAW_BIN: path.join(mockBinDir, 'openclaw'),
+  MC_CLAUDE_HOME: claudeHomeDir,
   OPENCODE_BIN: path.join(mockBinDir, 'opencode'),
   CLAWDBOT_BIN: path.join(mockBinDir, 'clawdbot'),
   MC_SKILLS_USER_AGENTS_DIR: path.join(skillsRoot, 'user-agents'),
@@ -248,6 +254,25 @@ if (!fs.existsSync(buildIdPath)) {
 }
 
 const standaloneServerPath = findStandaloneServer(repoRoot)
+
+// Serve a hydrated UI: the standalone artifact does not embed .next/static or
+// public/ on this repo's build path, so the served HTML references chunk
+// hashes the standalone tree does not contain (400s). Mirror
+// scripts/start-standalone.sh and refresh both on every harness start.
+if (standaloneServerPath) {
+  const standaloneDir = path.dirname(standaloneServerPath)
+  const standaloneNextDir = path.join(standaloneDir, '.next')
+  const repoStaticDir = path.join(repoRoot, '.next', 'static')
+  const repoPublicDir = path.join(repoRoot, 'public')
+  if (fs.existsSync(repoStaticDir)) {
+    fs.rmSync(path.join(standaloneNextDir, 'static'), { recursive: true, force: true })
+    fs.cpSync(repoStaticDir, path.join(standaloneNextDir, 'static'), { recursive: true })
+  }
+  if (fs.existsSync(repoPublicDir)) {
+    fs.rmSync(path.join(standaloneDir, 'public'), { recursive: true, force: true })
+    fs.cpSync(repoPublicDir, path.join(standaloneDir, 'public'), { recursive: true })
+  }
+}
 
 app = standaloneServerPath && fs.existsSync(standaloneServerPath)
   ? spawn('node', [standaloneServerPath], {

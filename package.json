@@ -9,11 +9,11 @@
     "mc": "node scripts/mc-cli.cjs",
     "mc:mcp": "node scripts/mc-mcp-server.cjs",
     "mc:tui": "node scripts/mc-tui.cjs",
-    "dev": "pnpm run verify:node && next dev --hostname 127.0.0.1 --port ${PORT:-3000}",
-    "build": "pnpm run verify:node && next build --webpack && pnpm artifact:prepare",
+    "dev": "pnpm run verify:node && node scripts/next-server.mjs dev",
+    "build": "pnpm run verify:node && node scripts/next-build.cjs build --webpack && pnpm artifact:prepare",
     "artifact:prepare": "node scripts/prepare-standalone-artifact.mjs",
     "artifact:check": "node scripts/check-standalone-artifact.mjs",
-    "start": "pnpm run verify:node && next start --hostname 0.0.0.0 --port ${PORT:-3000}",
+    "start": "pnpm run verify:node && node scripts/next-server.mjs start",
     "start:standalone": "pnpm run verify:node && bash scripts/start-standalone.sh",
     "deploy:standalone": "pnpm run verify:node && bash scripts/deploy-standalone.sh",
     "lint": "pnpm run verify:node && eslint .",
@@ -24,7 +24,7 @@
     "test:watch": "vitest",
     "test:ui": "vitest --ui",
     "test:e2e": "pnpm run verify:node && playwright test",
-    "test:e2e:openclaw:local": "pnpm run verify:node && E2E_GATEWAY_EXPECTED=0 playwright test -c playwright.openclaw.local.config.ts",
+    "test:e2e:openclaw:local": "pnpm run verify:node && playwright test -c playwright.openclaw.local.config.ts",
     "test:e2e:openclaw:gateway": "pnpm run verify:node && E2E_GATEWAY_EXPECTED=1 playwright test -c playwright.openclaw.gateway.config.ts",
     "test:e2e:openclaw": "pnpm test:e2e:openclaw:local && pnpm test:e2e:openclaw:gateway",
     "test:all": "pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:e2e",
@@ -93,6 +93,9 @@
   ],
   "author": "Builderz Labs",
   "license": "MIT",
+  "bin": {
+    "mc": "scripts/mc-cli.cjs"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/builderz-labs/mission-control.git"

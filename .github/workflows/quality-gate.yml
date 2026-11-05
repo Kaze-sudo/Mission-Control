@@ -71,3 +71,82 @@ jobs:
 
       - name: E2E tests
         run: pnpm test:e2e
+
+  agentos-live-e2e:
+    # Optional live verification of the AgentOS operational layer (pause gate,
+    # cancel, retry, execution approvals, SSE run events). Runs after the main
+    # gate on every PR/push; never blocks it (continue-on-error).
+    runs-on: ubuntu-latest
+    needs: [quality-gate]
+    continue-on-error: true
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Setup pnpm
+        # Version comes from package.json#packageManager (pnpm@10.29.3) — the
+        # single source of truth. action-setup@v4 errors if a `version:` is also
+        # set here (ERR_PNPM_BAD_PM_VERSION), so do not re-specify it.
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: '.nvmrc'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Start server (standalone)
+        # .env.test is copied for parity with the main gate; the E2E script and
+        # the server both read AUTH_* from it. No local .env exists on the
+        # runner, so process/.env.test credentials cannot diverge.
+        run: |
+          cp .env.test .env
+          node .next/standalone/server.js > agentos-e2e-server.log 2>&1 &
+          echo $! > agentos-e2e-server.pid
+          up=0
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3000/ || true)
+            if [ "$code" != "000" ]; then echo "server up (HTTP $code)"; up=1; break; fi
+            sleep 2
+          done
+          if [ "$up" != "1" ]; then
+            echo "server failed to start"; tail -50 agentos-e2e-server.log; exit 1
+          fi
+        env:
+          PORT: '3000'
+          AUTH_USER: testadmin
+          AUTH_PASS: testpass1234!
+          AUTH_SECRET: test-legacy-secret
+          MC_COOKIE_SECURE: ''
+          MC_COOKIE_SAMESITE: lax
+          MC_DISABLE_RUNTIME_SCAN: '1'
+          # Mock executor for the happy-path item (created by the E2E script on disk)
+          HERMES_PROFILES_DIR: ${{ github.workspace }}/.tmp/e2e-hermes/profiles
+          HERMES_BIN: ${{ github.workspace }}/.tmp/e2e-hermes/bin/hermes
+
+      - name: Run AgentOS live E2E
+        run: node scripts/e2e-agentos-live.cjs --base http://127.0.0.1:3000
+        env:
+          AUTH_USER: testadmin
+          AUTH_PASS: testpass1234!
+          MC_URL: http://127.0.0.1:3000
+
+      - name: Collect server log on failure
+        if: failure()
+        run: |
+          echo "--- agentos-e2e-server.log (tail) ---"
+          tail -100 agentos-e2e-server.log || true
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f agentos-e2e-server.pid ]; then
+            kill "$(cat agentos-e2e-server.pid)" 2>/dev/null || true
+          fi

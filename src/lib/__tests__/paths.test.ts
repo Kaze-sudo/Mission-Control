@@ -2,17 +2,21 @@ import { describe, it, expect } from 'vitest'
 import { resolveWithin } from '../paths'
 import path from 'node:path'
 
+// Expected values are derived with path.resolve so the suite checks the
+// containment CONTRACT (resolve + escape rejection) on every platform instead
+// of hardcoding POSIX separator output. On POSIX this is identical to the
+// original literal expectations.
 describe('resolveWithin', () => {
   const base = '/tmp/sandbox'
 
   it('resolves a simple relative path within base', () => {
     const result = resolveWithin(base, 'file.txt')
-    expect(result).toBe('/tmp/sandbox/file.txt')
+    expect(result).toBe(path.resolve(base, 'file.txt'))
   })
 
   it('resolves nested relative path', () => {
     const result = resolveWithin(base, 'subdir/file.txt')
-    expect(result).toBe('/tmp/sandbox/subdir/file.txt')
+    expect(result).toBe(path.resolve(base, 'subdir/file.txt'))
   })
 
   it('throws when path escapes base with ..', () => {
@@ -28,13 +32,13 @@ describe('resolveWithin', () => {
   })
 
   it('allows an absolute path within the base', () => {
-    const result = resolveWithin(base, '/tmp/sandbox/file.txt')
-    expect(result).toBe('/tmp/sandbox/file.txt')
+    const result = resolveWithin(base, `${base}/file.txt`)
+    expect(result).toBe(path.resolve(base, `${base}/file.txt`))
   })
 
   it('handles double slashes and normalizes', () => {
     const result = resolveWithin(base, 'subdir//file.txt')
-    expect(result).toBe('/tmp/sandbox/subdir/file.txt')
+    expect(result).toBe(path.resolve(base, 'subdir/file.txt'))
   })
 
   it('does not allow sibling directory access', () => {
@@ -42,7 +46,7 @@ describe('resolveWithin', () => {
   })
 
   it('handles base dir with trailing slash', () => {
-    const result = resolveWithin('/tmp/sandbox/', 'file.txt')
-    expect(result).toBe('/tmp/sandbox/file.txt')
+    const result = resolveWithin(`${base}/`, 'file.txt')
+    expect(result).toBe(path.resolve(`${base}/`, 'file.txt'))
   })
 })

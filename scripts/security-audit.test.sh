@@ -27,9 +27,21 @@ MC_DISABLE_RATE_LIMIT=0
 EOF
 chmod 600 "$HARDENED_ENV"
 
-output="$(bash "$AUDIT" --env-file "$HARDENED_ENV" --strict)"
+output="$(bash "$AUDIT" --env-file "$HARDENED_ENV" --strict --skip-docker)"
 grep -Fq '[PASS] AUTH_PASS is set to a non-default value (19 chars)' <<< "$output"
-grep -Fq '=== Security Score: 8 / 8 ===' <<< "$output"
+# The score depends on whether the host filesystem can represent POSIX
+# permission bits: 8 checks when chmod works (Linux CI), 7 when the
+# permission check is skipped (e.g. NTFS via MSYS/Git Bash).
+probe="$(mktemp -d "${TMPDIR:-/tmp}/mc-perm-probe.XXXXXX")"
+chmod 600 "$probe" 2>/dev/null || true
+probe_perms="$(stat -c '%a' -- "$probe" 2>/dev/null || stat -f '%Lp' "$probe" 2>/dev/null || echo unknown)"
+rm -rf "$probe"
+if [[ "$probe_perms" == "600" ]]; then
+  EXPECTED_SCORE='8 / 8'
+else
+  EXPECTED_SCORE='7 / 7'
+fi
+grep -Fq "=== Security Score: $EXPECTED_SCORE ===" <<< "$output"
 grep -Fq 'All checks passed!' <<< "$output"
 
 cat > "$INSECURE_ENV" <<'EOF'
@@ -40,7 +52,7 @@ MC_DISABLE_RATE_LIMIT=1
 EOF
 chmod 600 "$INSECURE_ENV"
 
-if bash "$AUDIT" --env-file "$INSECURE_ENV" --strict >/dev/null 2>&1; then
+if bash "$AUDIT" --env-file "$INSECURE_ENV" --strict --skip-docker >/dev/null 2>&1; then
   echo 'Expected --strict to fail when the audit reports security findings' >&2
   exit 1
 fi

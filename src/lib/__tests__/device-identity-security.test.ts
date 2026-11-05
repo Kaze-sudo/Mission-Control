@@ -8,7 +8,33 @@ import {
 describe('device identity secure fallback', () => {
   const originalIndexedDb = globalThis.indexedDB
 
+  // Node >= 26 ships an experimental global `localStorage` that is disabled
+  // unless `--localstorage-file` is provided; it shadows jsdom's working
+  // implementation in the vitest environment. Provide an explicit in-memory
+  // stub so the module under test (which uses the real browser API) behaves
+  // as it does in a browser. Assertions are unchanged.
+  const originalLocalStorage = globalThis.localStorage
+  let memoryStore: Record<string, string> = {}
+
   beforeEach(() => {
+    memoryStore = {}
+    if (!originalLocalStorage) {
+      Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: {
+          getItem: (key: string) => (key in memoryStore ? memoryStore[key] : null),
+          setItem: (key: string, value: string) => {
+            memoryStore[key] = String(value)
+          },
+          removeItem: (key: string) => {
+            delete memoryStore[key]
+          },
+          clear: () => {
+            memoryStore = {}
+          },
+        } as Storage,
+      })
+    }
     clearDeviceIdentity()
     localStorage.clear()
     Object.defineProperty(globalThis, 'indexedDB', {
@@ -23,6 +49,12 @@ describe('device identity secure fallback', () => {
       configurable: true,
       value: originalIndexedDb,
     })
+    if (!originalLocalStorage) {
+      Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        value: originalLocalStorage,
+      })
+    }
   })
 
   it('uses a non-extractable in-memory key when IndexedDB is unavailable', async () => {

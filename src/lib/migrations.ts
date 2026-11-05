@@ -1550,6 +1550,332 @@ const migrations: Migration[] = [
         db.exec(`ALTER TABLE agents ADD COLUMN claude_base_session_created_at TEXT DEFAULT NULL`)
       }
     }
+  },
+  {
+    // AgentOS: reference external CLI-native agents from projects without copying
+    // or relocating their profile/config files. Identity is platoon-scoped so
+    // two runtimes may safely expose agents with the same display name.
+    id: '056_agentos_external_project_bindings',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS project_external_agent_bindings (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          platoon_id TEXT NOT NULL,
+          external_agent_id TEXT NOT NULL,
+          agent_name TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'member',
+          definition_path TEXT,
+          capability_snapshot TEXT,
+          bound_by TEXT,
+          bound_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+          UNIQUE(project_id, platoon_id, external_agent_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_external_bindings_project
+          ON project_external_agent_bindings(project_id, workspace_id);
+        CREATE INDEX IF NOT EXISTS idx_external_bindings_agent
+          ON project_external_agent_bindings(platoon_id, external_agent_id);
+      `)
+    }
+  },
+  {
+    id: '057_agentos_routing_proxy_name',
+    up: (db) => {
+      const cols = db.prepare(`PRAGMA table_info(project_external_agent_bindings)`).all() as Array<{ name: string }>
+      if (!cols.some(c => c.name === 'routing_agent_name')) {
+        db.exec(`ALTER TABLE project_external_agent_bindings ADD COLUMN routing_agent_name TEXT`)
+      }
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_external_bindings_routing_agent ON project_external_agent_bindings(routing_agent_name)`)
+    }
+  },
+  {
+    id: '058_agentos_routing_decisions',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agentos_routing_decisions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          task_id INTEGER NOT NULL,
+          project_id INTEGER,
+          workspace_id INTEGER NOT NULL,
+          status TEXT NOT NULL,
+          requirements_json TEXT NOT NULL,
+          candidates_json TEXT NOT NULL,
+          selected_external_agent_id TEXT,
+          selected_platoon_id TEXT,
+          selected_routing_agent_name TEXT,
+          reason TEXT,
+          actor TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_routing_decisions_task ON agentos_routing_decisions(task_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agentos_routing_decisions_project ON agentos_routing_decisions(project_id, created_at DESC);
+      `)
+    }
+  },
+  {
+    id: '059_agentos_project_force_profiles',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agentos_project_force_profiles (
+          project_id INTEGER PRIMARY KEY,
+          workspace_id INTEGER NOT NULL,
+          required_capabilities_json TEXT NOT NULL DEFAULT '[]',
+          preferred_capabilities_json TEXT NOT NULL DEFAULT '[]',
+          preferred_platoons_json TEXT NOT NULL DEFAULT '[]',
+          max_team_size INTEGER,
+          updated_by TEXT,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_force_profiles_workspace ON agentos_project_force_profiles(workspace_id, project_id);
+      `)
+    }
+  },
+  {
+    id: '060_agentos_project_command_policy',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agentos_project_command (
+          project_id INTEGER PRIMARY KEY,
+          workspace_id INTEGER NOT NULL,
+          state TEXT NOT NULL DEFAULT 'draft' CHECK(state IN ('draft','ready','active','paused','blocked')),
+          auto_route INTEGER NOT NULL DEFAULT 0,
+          allow_reroute INTEGER NOT NULL DEFAULT 0,
+          fallback_behavior TEXT NOT NULL DEFAULT 'hold' CHECK(fallback_behavior IN ('hold','manual','best_available')),
+          allowed_platoons_json TEXT NOT NULL DEFAULT '[]',
+          max_project_concurrent INTEGER NOT NULL DEFAULT 3,
+          max_platoon_concurrent INTEGER NOT NULL DEFAULT 2,
+          max_agent_concurrent INTEGER NOT NULL DEFAULT 1,
+          activated_at INTEGER,
+          updated_by TEXT,
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_project_command_workspace ON agentos_project_command(workspace_id, state, project_id);
+      `)
+    }
+  },
+  {
+    id: '061_agentos_task_handoffs',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agentos_task_handoffs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          from_task_id INTEGER NOT NULL,
+          to_task_id INTEGER,
+          from_routing_agent_name TEXT,
+          to_external_agent_id TEXT,
+          to_platoon_id TEXT,
+          requested_capabilities_json TEXT NOT NULL DEFAULT '[]',
+          instructions TEXT,
+          status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','completed','blocked','cancelled')),
+          created_by TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+          FOREIGN KEY (from_task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY (to_task_id) REFERENCES tasks(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_handoffs_project ON agentos_task_handoffs(project_id, status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agentos_handoffs_tasks ON agentos_task_handoffs(from_task_id, to_task_id);
+      `)
+    }
+  },
+  {
+    id: '062_agentos_objectives',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agentos_objectives (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          status TEXT NOT NULL DEFAULT 'planned'
+            CHECK(status IN ('draft','planned','active','completed','failed','cancelled')),
+          plan_json TEXT NOT NULL DEFAULT '{}',
+          created_by TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_objectives_project
+          ON agentos_objectives(project_id, workspace_id, status, created_at DESC);
+      `)
+    }
+  },
+  {
+    id: '063_agentos_delegations',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agentos_delegations (
+          id TEXT PRIMARY KEY,
+          task_id INTEGER NOT NULL,
+          project_id INTEGER,
+          workspace_id INTEGER NOT NULL,
+          objective_id INTEGER,
+          platoon_id TEXT,
+          specialist_name TEXT,
+          routing_agent_name TEXT,
+          runtime_type TEXT,
+          status TEXT NOT NULL DEFAULT 'claimed'
+            CHECK(status IN ('claimed','accepted','pending','completed','retrying','failed','cancelled')),
+          native_session_id TEXT,
+          native_run_id TEXT,
+          attempt INTEGER NOT NULL DEFAULT 1,
+          result_summary TEXT,
+          error_message TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          completed_at INTEGER,
+          FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE,
+          FOREIGN KEY (objective_id) REFERENCES agentos_objectives(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_delegations_task
+          ON agentos_delegations(task_id, workspace_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agentos_delegations_project
+          ON agentos_delegations(project_id, workspace_id, status, created_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agentos_delegations_native
+          ON agentos_delegations(native_session_id, native_run_id);
+      `)
+    }
+  },
+  {
+    id: '064_agentos_objectives_needs_manual',
+    // Table rebuild to extend the status CHECK with 'needs_manual'.
+    // agentos_delegations.objective_id references this table by name; with
+    // foreign_keys OFF during the swap the rebuild is atomic and FK-safe.
+    foreignKeysOff: true,
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE agentos_objectives_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          project_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          title TEXT NOT NULL,
+          description TEXT,
+          status TEXT NOT NULL DEFAULT 'planned'
+            CHECK(status IN ('draft','planned','active','completed','failed','needs_manual','cancelled')),
+          plan_json TEXT NOT NULL DEFAULT '{}',
+          created_by TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        INSERT INTO agentos_objectives_new (
+          id, project_id, workspace_id, title, description, status, plan_json,
+          created_by, created_at, updated_at
+        )
+        SELECT id, project_id, workspace_id, title, description, status, plan_json,
+               created_by, created_at, updated_at
+        FROM agentos_objectives;
+        DROP TABLE agentos_objectives;
+        ALTER TABLE agentos_objectives_new RENAME TO agentos_objectives;
+        CREATE INDEX IF NOT EXISTS idx_agentos_objectives_project
+          ON agentos_objectives(project_id, workspace_id, status, created_at DESC);
+      `)
+    }
+  },
+  {
+    id: '065_agentos_execution_authorization',
+    up: (db) => {
+      db.exec(`
+        ALTER TABLE agentos_project_command ADD COLUMN allow_free_local_without_approval INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE agentos_project_command ADD COLUMN allow_free_remote_without_approval INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE agentos_project_command ADD COLUMN allow_paid_without_approval INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE agentos_project_command ADD COLUMN max_approved_estimated_cost REAL;
+        ALTER TABLE agentos_project_command ADD COLUMN approved_providers_json TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE agentos_project_command ADD COLUMN blocked_providers_json TEXT NOT NULL DEFAULT '[]';
+        CREATE TABLE IF NOT EXISTS agentos_execution_plans (
+          objective_id INTEGER PRIMARY KEY,
+          project_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'PREVIEW'
+            CHECK(status IN ('PREVIEW','AWAITING_APPROVAL','APPROVED','RUNNING','COMPLETE','CANCELLED')),
+          plan_json TEXT NOT NULL DEFAULT '{}',
+          fingerprint TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (objective_id) REFERENCES agentos_objectives(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE TABLE IF NOT EXISTS agentos_execution_approvals (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          approval_id TEXT NOT NULL UNIQUE,
+          objective_id INTEGER NOT NULL,
+          project_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          approved_by TEXT NOT NULL,
+          approved_at INTEGER NOT NULL,
+          approved_task_ids_json TEXT NOT NULL DEFAULT '[]',
+          excluded_task_ids_json TEXT NOT NULL DEFAULT '[]',
+          fingerprint TEXT NOT NULL,
+          max_authorized_amount REAL,
+          expires_at INTEGER,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (objective_id) REFERENCES agentos_objectives(id) ON DELETE CASCADE,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_execution_approvals_objective
+          ON agentos_execution_approvals(objective_id, workspace_id, created_at DESC);
+      `)
+    }
+  },
+  {
+    id: '066_agentos_execution_costs',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agentos_execution_costs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          objective_id INTEGER NOT NULL,
+          workspace_id INTEGER NOT NULL,
+          task_id INTEGER,
+          delegation_id TEXT,
+          plan_id TEXT,
+          approval_id TEXT,
+          kind TEXT NOT NULL
+            CHECK(kind IN ('reserved','released','actual')),
+          amount REAL NOT NULL DEFAULT 0,
+          currency TEXT NOT NULL DEFAULT 'USD',
+          input_tokens INTEGER,
+          output_tokens INTEGER,
+          provider_generation_id TEXT,
+          note TEXT,
+          created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+          FOREIGN KEY (objective_id) REFERENCES agentos_objectives(id) ON DELETE CASCADE,
+          FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_agentos_execution_costs_objective
+          ON agentos_execution_costs(objective_id, workspace_id, kind, created_at);
+      `)
+    }
+  },
+  {
+    id: '067_users_auth_source',
+    up: (db) => {
+      const cols = db.prepare('PRAGMA table_info(users)').all() as Array<{ name: string }>
+      if (!cols.some(c => c.name === 'auth_source')) {
+        db.exec("ALTER TABLE users ADD COLUMN auth_source TEXT")
+      }
+    },
   }
 ]
 

@@ -21,7 +21,7 @@ import {
   type RuntimeId,
 } from '@/lib/agent-runtimes'
 
-const RUNTIME_IDS: RuntimeId[] = ['openclaw', 'hermes', 'claude', 'codex', 'opencode']
+const RUNTIME_IDS: RuntimeId[] = ['openclaw', 'hermes', 'claude', 'codex', 'opencode', 'gamut']
 const CAPABILITY_KEYS: Array<keyof Omit<RuntimeCapabilities, 'receipts'>> = [
   'dispatch', 'session_resume', 'pty', 'workspace_cwd',
   'tool_policy', 'budget_cap', 'structured_output', 'skills_inventory',
@@ -55,11 +55,13 @@ describe('runtime capability manifests (#900)', () => {
     expect(claude.pty).toBe(false)
   })
 
-  it('hermes stays honest until upstream ships machine-readable inventory', () => {
-    // Flip only when NousResearch/hermes-agent#71274 lands and the provider
-    // from #777 actually consumes it.
+  it('hermes declares guarded profile dispatch while inventory stays unavailable', () => {
+    // AgentOS ships one-shot profile dispatch through callHermesViaProfile(),
+    // guarded by the platoon ESTOP. Canonical machine-readable skills inventory
+    // is still unavailable until the upstream inventory contract lands.
+    expect(getRuntimeCapabilities('hermes').dispatch).toBe(true)
+    expect(getRuntimeCapabilities('hermes').workspace_cwd).toBe(true)
     expect(getRuntimeCapabilities('hermes').skills_inventory).toBe(false)
-    expect(getRuntimeCapabilities('hermes').dispatch).toBe(false)
   })
 
   it('read-only scanners never claim dispatch depth', () => {

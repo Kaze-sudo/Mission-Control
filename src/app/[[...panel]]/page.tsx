@@ -13,9 +13,16 @@ import { CostTrackerPanel } from '@/components/panels/cost-tracker-panel'
 import { TaskBoardPanel } from '@/components/panels/task-board-panel'
 import { ActivityFeedPanel } from '@/components/panels/activity-feed-panel'
 import { AgentSquadPanelPhase3 } from '@/components/panels/agent-squad-panel-phase3'
+import { PlatoonsPanel } from '@/components/panels/platoons-panel'
+import { AgentRegistryPanel } from '@/components/panels/agent-registry-panel'
+import { ProjectCommandPanel } from '@/components/panels/project-command-panel'
 import { AgentCommsPanel } from '@/components/panels/agent-comms-panel'
 import { StandupPanel } from '@/components/panels/standup-panel'
 import { OrchestrationBar } from '@/components/panels/orchestration-bar'
+import { AgentOSOverviewPanel } from '@/components/panels/agentos-overview-panel'
+import { AgentOSRunsPanel } from '@/components/panels/agentos-runs-panel'
+import { AgentOSApprovalsPanel } from '@/components/panels/agentos-approvals-panel'
+import { AgentOSReviewsPanel } from '@/components/panels/agentos-reviews-panel'
 import { NotificationsPanel } from '@/components/panels/notifications-panel'
 import { UserManagementPanel } from '@/components/panels/user-management-panel'
 import { AuditTrailPanel } from '@/components/panels/audit-trail-panel'
@@ -517,7 +524,7 @@ export default function Home() {
 }
 
 const ESSENTIAL_PANELS = new Set([
-  'overview', 'agents', 'tasks', 'chat', 'activity', 'logs', 'settings',
+  'overview', 'agents', 'platoons', 'registry', 'command', 'tasks', 'runs', 'chat', 'activity', 'logs', 'settings',
 ])
 
 function ContentRouter({ tab }: { tab: string }) {
@@ -561,6 +568,9 @@ function ContentRouter({ tab }: { tab: string }) {
     case 'overview':
       return (
         <>
+          <div className="mt-4 mx-4">
+            <AgentOSOverviewPanel />
+          </div>
           <Dashboard />
           {!isLocal && (
             <div className="mt-4 mx-4 mb-4 rounded-lg border border-border bg-card overflow-hidden">
@@ -579,6 +589,18 @@ function ContentRouter({ tab }: { tab: string }) {
           <AgentSquadPanelPhase3 />
         </>
       )
+    case 'platoons':
+      return <PlatoonsPanel />
+    case 'registry':
+      return <AgentRegistryPanel />
+    case 'runs':
+      return <AgentOSRunsPanel />
+    case 'approvals':
+      return <AgentOSApprovalsPanel />
+    case 'reviews':
+      return <AgentOSReviewsPanel />
+    case 'command':
+      return <ProjectCommandPanel />
     case 'notifications':
       return <NotificationsPanel />
     case 'standup':

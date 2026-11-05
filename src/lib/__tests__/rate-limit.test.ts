@@ -37,11 +37,50 @@ describe('createRateLimiter', () => {
     expect(limiter('workspace-1:user-1')).toBeNull()
     expect(limiter('workspace-1:user-1')?.status).toBe(429)
   })
+  it('bypasses a critical IP limiter in test mode when the request has no client-IP context', () => {
+    process.env.MC_DISABLE_RATE_LIMIT = '1'
+    process.env.MISSION_CONTROL_TEST_MODE = '1'
+    const limiter = createRateLimiter({ windowMs: 60_000, maxRequests: 1, critical: true })
+
+    // Browser/UI login traffic carries no x-real-ip (and no trusted proxies),
+    // so every shared-bucket request stays allowed across the whole window.
+    expect(limiter(makeNoIpRequest())).toBeNull()
+    expect(limiter(makeNoIpRequest())).toBeNull()
+    expect(limiter(makeNoIpRequest())).toBeNull()
+  })
+
+  it('keeps enforcement for a critical IP limiter when the request presents x-real-ip in test mode', () => {
+    process.env.MC_DISABLE_RATE_LIMIT = '1'
+    process.env.MISSION_CONTROL_TEST_MODE = '1'
+    const limiter = createRateLimiter({ windowMs: 60_000, maxRequests: 1, critical: true })
+
+    // Explicit x-real-ip keeps the limiter live (rate-limiting.spec.ts path).
+    expect(limiter(makeRequest('10.99.99.99'))).toBeNull()
+    expect(limiter(makeRequest('10.99.99.99'))?.status).toBe(429)
+  })
+
+  it('does not bypass a critical IP limiter without explicit test mode', () => {
+    process.env.MC_DISABLE_RATE_LIMIT = '1'
+    delete process.env.MISSION_CONTROL_TEST_MODE
+    const limiter = createRateLimiter({ windowMs: 60_000, maxRequests: 1, critical: true })
+
+    expect(limiter(makeRequest('10.99.99.99'))).toBeNull()
+    expect(limiter(makeRequest('10.99.99.99'))?.status).toBe(429)
+    // The shared unknown bucket is equally enforced without the opt-in:
+    // the first request opens the window, the next one over it is 429.
+    expect(limiter(makeRequest())).toBeNull()
+    expect(limiter(makeRequest())?.status).toBe(429)
+  })
 
   function makeRequest(ip: string = '127.0.0.1'): Request {
     return new Request('http://localhost/api/test', {
       headers: new Headers({ 'x-real-ip': ip }),
     })
+  }
+
+  // No client-IP headers at all (browser/UI traffic without trusted proxies)
+  function makeNoIpRequest(): Request {
+    return new Request('http://localhost/api/test', { headers: new Headers() })
   }
 
   it('allows first request within limit (returns null)', () => {

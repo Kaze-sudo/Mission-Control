@@ -264,23 +264,8 @@ async function getSystemStatus(workspaceId: number, includeGlobalRuntime: boolea
   }
 
   try {
-    // System uptime (cross-platform)
-    if (process.platform === 'darwin') {
-      const { stdout } = await runCommand('sysctl', ['-n', 'kern.boottime'], {
-        timeoutMs: 3000
-      })
-      // Output format: { sec = 1234567890, usec = 0 } ...
-      const match = stdout.match(/sec\s*=\s*(\d+)/)
-      if (match) {
-        status.uptime = Date.now() - parseInt(match[1]) * 1000
-      }
-    } else {
-      const { stdout } = await runCommand('uptime', ['-s'], {
-        timeoutMs: 3000
-      })
-      const bootTime = new Date(stdout.trim())
-      status.uptime = Date.now() - bootTime.getTime()
-    }
+    // Node exposes system uptime cross-platform; avoid shell-specific uptime commands.
+    status.uptime = Math.round(os.uptime() * 1000)
   } catch (error) {
     logger.error({ err: error }, 'Error getting uptime')
   }
@@ -299,17 +284,32 @@ async function getSystemStatus(workspaceId: number, includeGlobalRuntime: boolea
 
   try {
     // Disk info
-    const { stdout: diskOutput } = await runCommand('df', ['-h', '/'], {
-      timeoutMs: 3000
-    })
-    const lastLine = diskOutput.trim().split('\n').pop() || ''
-    const diskParts = lastLine.split(/\s+/)
-    if (diskParts.length >= 4) {
+    if (process.platform === 'win32') {
+      const drive = path.parse(process.cwd()).root.replace(/\\$/, '')
+      const ps = [
+        `$d=Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='${drive}'"`,
+        `if($d){[pscustomobject]@{total=[int64]$d.Size;available=[int64]$d.FreeSpace;used=[int64]($d.Size-$d.FreeSpace)}|ConvertTo-Json -Compress}`,
+      ].join(';')
+      const { stdout } = await runCommand('powershell.exe', ['-NoProfile', '-Command', ps], { timeoutMs: 3000 })
+      const disk = JSON.parse(stdout.trim()) as { total: number; used: number; available: number }
+      const toGb = (bytes: number) => `${(bytes / (1024 ** 3)).toFixed(1)}G`
       status.disk = {
-        total: diskParts[1],
-        used: diskParts[2],
-        available: diskParts[3],
-        usage: diskParts[4]
+        total: toGb(disk.total),
+        used: toGb(disk.used),
+        available: toGb(disk.available),
+        usage: disk.total > 0 ? `${Math.round((disk.used / disk.total) * 100)}%` : '0%'
+      }
+    } else {
+      const { stdout: diskOutput } = await runCommand('df', ['-h', '/'], { timeoutMs: 3000 })
+      const lastLine = diskOutput.trim().split('\n').pop() || ''
+      const diskParts = lastLine.split(/\s+/)
+      if (diskParts.length >= 4) {
+        status.disk = {
+          total: diskParts[1],
+          used: diskParts[2],
+          available: diskParts[3],
+          usage: diskParts[4]
+        }
       }
     }
   } catch (error) {
@@ -317,24 +317,33 @@ async function getSystemStatus(workspaceId: number, includeGlobalRuntime: boolea
   }
 
   try {
-    // ClawdBot processes
-    const { stdout: processOutput } = await runCommand(
-      'ps',
-      ['-A', '-o', 'pid,comm,args'],
-      { timeoutMs: 3000 }
-    )
-    const processes = processOutput.split('\n')
-      .filter(line => line.trim())
-      .filter(line => !line.trim().toLowerCase().startsWith('pid '))
-      .map(line => {
-        const parts = line.trim().split(/\s+/)
-        return {
-          pid: parts[0],
-          command: parts.slice(2).join(' ')
-        }
-      })
-      .filter((proc) => /clawdbot|openclaw/i.test(proc.command))
-    status.processes = processes
+    // OpenClaw/ClawdBot processes
+    if (process.platform === 'win32') {
+      const ps = [
+        `$p=Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'clawdbot|openclaw' }`,
+        `@($p | ForEach-Object {[pscustomobject]@{pid=[string]$_.ProcessId;command=[string]$_.CommandLine}}) | ConvertTo-Json -Compress`,
+      ].join(';')
+      const { stdout } = await runCommand('powershell.exe', ['-NoProfile', '-Command', ps], { timeoutMs: 3000 })
+      const parsed = stdout.trim() ? JSON.parse(stdout.trim()) : []
+      status.processes = Array.isArray(parsed) ? parsed : [parsed]
+    } else {
+      const { stdout: processOutput } = await runCommand(
+        'ps',
+        ['-A', '-o', 'pid,comm,args'],
+        { timeoutMs: 3000 }
+      )
+      status.processes = processOutput.split('\n')
+        .filter(line => line.trim())
+        .filter(line => !line.trim().toLowerCase().startsWith('pid '))
+        .map(line => {
+          const parts = line.trim().split(/\s+/)
+          return {
+            pid: parts[0],
+            command: parts.slice(2).join(' ')
+          }
+        })
+        .filter((proc) => /clawdbot|openclaw/i.test(proc.command))
+    }
   } catch (error) {
     logger.error({ err: error }, 'Error getting process info')
   }

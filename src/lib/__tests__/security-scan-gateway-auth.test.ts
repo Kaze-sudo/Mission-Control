@@ -34,6 +34,10 @@ function gatewayAuthStatus() {
 }
 
 describe('scanOpenClaw — gateway_auth credential handling', () => {
+  // PLATFORM-SPECIFIC: per-test timeout raised because runSecurityScan runs
+  // best-effort OS probes (PowerShell on Windows) whose first cold scan can
+  // exceed the 5s default on Windows. Tests verify credential-handling logic,
+  // not probe latency.
   beforeEach(() => {
     writeOpenClawConfig({})
   })
@@ -41,7 +45,7 @@ describe('scanOpenClaw — gateway_auth credential handling', () => {
     rmSync(join(tmpConfigPath, '..'), { recursive: true, force: true })
   })
 
-  it('does not crash and passes when token is a SecretRef object (regression for #670)', () => {
+  it('does not crash and passes when token is a SecretRef object (regression for #670)', { timeout: 30_000 }, () => {
     writeOpenClawConfig({
       gateway: { auth: { mode: 'token', token: { source: 'file', path: '/secrets/gateway-token' } } },
     })
@@ -49,28 +53,28 @@ describe('scanOpenClaw — gateway_auth credential handling', () => {
     expect(gatewayAuthStatus()).toBe('pass')
   })
 
-  it('passes when password is a SecretRef object', () => {
+  it('passes when password is a SecretRef object', { timeout: 30_000 }, () => {
     writeOpenClawConfig({
       gateway: { auth: { mode: 'password', password: { source: 'vault', ref: 'op://vault/item' } } },
     })
     expect(gatewayAuthStatus()).toBe('pass')
   })
 
-  it('passes when token is a non-empty plain string', () => {
+  it('passes when token is a non-empty plain string', { timeout: 30_000 }, () => {
     writeOpenClawConfig({
       gateway: { auth: { mode: 'token', token: 'plain-secret-token' } },
     })
     expect(gatewayAuthStatus()).toBe('pass')
   })
 
-  it('fails when token mode is set but token is an empty string', () => {
+  it('fails when token mode is set but token is an empty string', { timeout: 30_000 }, () => {
     writeOpenClawConfig({
       gateway: { auth: { mode: 'token', token: '' } },
     })
     expect(gatewayAuthStatus()).toBe('fail')
   })
 
-  it('fails when token mode is set but token is missing', () => {
+  it('fails when token mode is set but token is missing', { timeout: 30_000 }, () => {
     writeOpenClawConfig({
       gateway: { auth: { mode: 'token' } },
     })

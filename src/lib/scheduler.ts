@@ -10,7 +10,13 @@ import { pruneGatewaySessionsOlderThan, getAgentLiveStatuses } from './sessions'
 import { eventBus } from './event-bus'
 import { syncSkillsFromDisk } from './skill-sync'
 import { syncLocalAgents } from './local-agent-sync'
+import { registerRosterAgents } from './agent-roster-sync'
+import { refreshOpenRouterPricing } from './model-pricing'
 import { dispatchAssignedTasks, runAegisReviews, requeueStaleTasks, autoRouteInboxTasks, reconcileDeferredTaskCompletions } from './task-dispatch'
+import { reconcileDeepReviewMissions } from './resource-deep-review'
+import { reconcileKnowledgeCuration } from './knowledge-curation'
+import { reconcileObjectiveStatuses } from './objective-planning'
+import { brokerAgentOSDispatchQueue } from './agentos-dispatch-broker'
 import { spawnRecurringTasks } from './recurring-tasks'
 import { resolveSharedRuntimeWorkspaceId } from './workspace-isolation'
 
@@ -388,6 +394,24 @@ export function initScheduler() {
     running: false,
   })
 
+  tasks.set('agentos_roster_sync', {
+    name: 'AgentOS Roster Sync',
+    intervalMs: TICK_MS, // Every 60s — delta-guarded registration of discovered specialists
+    lastRun: null,
+    nextRun: now + 25_000, // First scan 25s after startup (after gateway sync)
+    enabled: true,
+    running: false,
+  })
+
+  tasks.set('agentos_pricing_sync', {
+    name: 'AgentOS Model Pricing Sync',
+    intervalMs: 6 * 60 * 60 * 1000, // Every 6h — refresh OpenRouter pricing cache (TTL-cached, never blocks planning)
+    lastRun: null,
+    nextRun: now + 90_000, // First refresh 90s after startup
+    enabled: true,
+    running: false,
+  })
+
   tasks.set('task_dispatch', {
     name: 'Task Dispatch',
     intervalMs: TICK_MS, // Every 60s — check for assigned tasks to dispatch
@@ -455,12 +479,14 @@ async function tick() {
       : id === 'skill_sync' ? 'general.skill_sync'
       : id === 'local_agent_sync' ? 'general.local_agent_sync'
       : id === 'gateway_agent_sync' ? 'general.gateway_agent_sync'
+      : id === 'agentos_roster_sync' ? 'general.agentos_roster_sync'
+      : id === 'agentos_pricing_sync' ? 'general.agentos_pricing_sync'
       : id === 'task_dispatch' ? 'general.task_dispatch'
       : id === 'aegis_review' ? 'general.aegis_review'
       : id === 'recurring_task_spawn' ? 'general.recurring_task_spawn'
       : id === 'stale_task_requeue' ? 'general.stale_task_requeue'
       : 'general.agent_heartbeat'
-    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue'
+    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'agentos_roster_sync' || id === 'agentos_pricing_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue'
     if (!isSettingEnabled(settingKey, defaultEnabled)) continue
 
     task.running = true
@@ -471,6 +497,8 @@ async function tick() {
         : id === 'claude_session_scan' ? await syncClaudeSessions()
         : id === 'skill_sync' ? await syncSkillsFromDisk()
         : id === 'local_agent_sync' ? await syncLocalAgents()
+        : id === 'agentos_roster_sync' ? runAgentosRosterRegistration()
+        : id === 'agentos_pricing_sync' ? await runAgentosPricingRefresh()
         : id === 'gateway_agent_sync' ? await syncAgentsFromConfig('scheduled').then(async r => {
             if (r.error) return { ok: false, message: r.error }
             const refreshed = await syncAgentLiveStatuses()
@@ -478,9 +506,14 @@ async function tick() {
           })
         : id === 'task_dispatch' ? await autoRouteInboxTasks().then(async (routeResult) => {
             const reconcileResult = await reconcileDeferredTaskCompletions()
+            const deepReviewResult = reconcileDeepReviewMissions()
+            const knowledgeResult = reconcileKnowledgeCuration()
+            const objectiveChanges = reconcileObjectiveStatuses()
+            const objectiveResult = { ok: true, message: objectiveChanges.length ? `${objectiveChanges.length} objective(s) reconciled` : '' }
+            const brokerResult = brokerAgentOSDispatchQueue()
             const dispatchResult = await dispatchAssignedTasks()
-            const parts = [reconcileResult.message, routeResult.message, dispatchResult.message].filter(m => m && !m.includes('No ') && !m.includes('none completed'))
-            return { ok: routeResult.ok && reconcileResult.ok && dispatchResult.ok, message: parts.join(' | ') || 'No tasks to reconcile, route, or dispatch' }
+            const parts = [reconcileResult.message, routeResult.message, deepReviewResult.message, knowledgeResult.message, objectiveResult.message, brokerResult.message, dispatchResult.message].filter(m => m && !m.includes('No ') && !m.includes('none completed'))
+            return { ok: routeResult.ok && reconcileResult.ok && brokerResult.ok && dispatchResult.ok, message: parts.join(' | ') || 'No tasks to reconcile, route, or dispatch' }
           })
         : id === 'aegis_review' ? await runAegisReviews()
         : id === 'recurring_task_spawn' ? await spawnRecurringTasks()
@@ -517,12 +550,14 @@ export function getSchedulerStatus() {
       : id === 'skill_sync' ? 'general.skill_sync'
       : id === 'local_agent_sync' ? 'general.local_agent_sync'
       : id === 'gateway_agent_sync' ? 'general.gateway_agent_sync'
+      : id === 'agentos_roster_sync' ? 'general.agentos_roster_sync'
+      : id === 'agentos_pricing_sync' ? 'general.agentos_pricing_sync'
       : id === 'task_dispatch' ? 'general.task_dispatch'
       : id === 'aegis_review' ? 'general.aegis_review'
       : id === 'recurring_task_spawn' ? 'general.recurring_task_spawn'
       : id === 'stale_task_requeue' ? 'general.stale_task_requeue'
       : 'general.agent_heartbeat'
-    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue'
+    const defaultEnabled = id === 'agent_heartbeat' || id === 'webhook_retry' || id === 'claude_session_scan' || id === 'skill_sync' || id === 'local_agent_sync' || id === 'gateway_agent_sync' || id === 'agentos_roster_sync' || id === 'agentos_pricing_sync' || id === 'task_dispatch' || id === 'aegis_review' || id === 'recurring_task_spawn' || id === 'stale_task_requeue'
     result.push({
       id,
       name: task.name,
@@ -537,6 +572,39 @@ export function getSchedulerStatus() {
   return result
 }
 
+/** Pricing cache refresh (Phase 3) — never blocks planning; failures are silent. */
+async function runAgentosPricingRefresh(): Promise<{ ok: boolean; message: string }> {
+  try {
+    const result = await refreshOpenRouterPricing()
+    return result.refreshed
+      ? { ok: true, message: `Pricing cache refreshed: ${result.matched} OpenRouter models` }
+      : { ok: false, message: `Pricing refresh unavailable: ${result.error || 'no models returned'}` }
+  } catch (error) {
+    return { ok: false, message: `Pricing refresh failed: ${error instanceof Error ? error.message : 'unknown error'}` }
+  }
+}
+
+/** Registration-only roster sync (delta-guarded; no-op when nothing changed). */
+function runAgentosRosterRegistration(workspaceId?: number): { ok: boolean; message: string } {
+  try {
+    const resolved = resolveSharedRuntimeWorkspaceId(workspaceId)
+    if (resolved === null) {
+      return { ok: false, message: 'AgentOS roster sync requires one unambiguous shared workspace' }
+    }
+    const result = registerRosterAgents({ workspaceId: resolved, actor: 'scheduled' })
+    const parts: string[] = []
+    if (result.added) parts.push(`${result.added} added`)
+    if (result.updated) parts.push(`${result.updated} updated`)
+    if (result.markedOffline) parts.push(`${result.markedOffline} offline`)
+    return {
+      ok: true,
+      message: parts.length ? `Roster sync: ${parts.join(', ')} (${result.registered} registered)` : 'No roster changes',
+    }
+  } catch (error) {
+    return { ok: false, message: `AgentOS roster sync failed: ${error instanceof Error ? error.message : 'unknown error'}` }
+  }
+}
+
 /** Manually trigger a scheduled task */
 export async function triggerTask(taskId: string, workspaceId?: number): Promise<{ ok: boolean; message: string }> {
   if (taskId === 'auto_backup') return runBackup()
@@ -546,8 +614,9 @@ export async function triggerTask(taskId: string, workspaceId?: number): Promise
   if (taskId === 'claude_session_scan') return syncClaudeSessions()
   if (taskId === 'skill_sync') return syncSkillsFromDisk()
   if (taskId === 'local_agent_sync') return syncLocalAgents(workspaceId)
+  if (taskId === 'agentos_roster_sync') return runAgentosRosterRegistration(workspaceId)
   if (taskId === 'gateway_agent_sync') return syncAgentsFromConfig('manual', workspaceId).then(r => ({ ok: !r.error, message: r.error || `Gateway sync: ${r.created} created, ${r.updated} updated, ${r.synced} total` }))
-  if (taskId === 'task_dispatch') return autoRouteInboxTasks().then(async (r) => { const c = await reconcileDeferredTaskCompletions(); const d = await dispatchAssignedTasks(); return { ok: r.ok && c.ok && d.ok, message: [c.message, r.message, d.message].filter(m => m && !m.includes('No ') && !m.includes('none completed')).join(' | ') || 'No tasks' } })
+  if (taskId === 'task_dispatch') return autoRouteInboxTasks().then(async (r) => { const c = await reconcileDeferredTaskCompletions(); const dr = reconcileDeepReviewMissions(); const kc = reconcileKnowledgeCuration(); const ocChanges = reconcileObjectiveStatuses(); const oc = { ok: true, message: ocChanges.length ? `${ocChanges.length} objective(s) reconciled` : '' }; const b = brokerAgentOSDispatchQueue(workspaceId); const d = await dispatchAssignedTasks(); return { ok: r.ok && c.ok && b.ok && d.ok, message: [c.message, r.message, dr.message, kc.message, oc.message, b.message, d.message].filter(m => m && !m.includes('No ') && !m.includes('none completed')).join(' | ') || 'No tasks' } })
   if (taskId === 'aegis_review') return runAegisReviews()
   if (taskId === 'recurring_task_spawn') return spawnRecurringTasks()
   if (taskId === 'stale_task_requeue') return requeueStaleTasks()

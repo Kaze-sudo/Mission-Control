@@ -12,7 +12,13 @@ const workflows = [
 ]
 
 function readWorkflow(name: string): string {
-  return readFileSync(join(process.cwd(), '.github/workflows', name), 'utf8')
+  // Source-scan assertions match LF-shaped text; checkouts on Windows may use
+  // CRLF (core.autocrlf=true). Normalizing line endings does not weaken any
+  // assertion below — it only removes platform-dependent formatting.
+  return readFileSync(join(process.cwd(), '.github/workflows', name), 'utf8').replace(
+    /\r\n?/g,
+    '\n',
+  )
 }
 
 function topLevelPermissions(source: string): string {

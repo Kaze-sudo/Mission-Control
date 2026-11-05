@@ -54,3 +54,4 @@ docs/_*.png
 
 # IDE state
 .vs/
+.dyad/
